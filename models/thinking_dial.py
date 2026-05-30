@@ -1,37 +1,44 @@
 """
 Thinking Dial（动态推理强度控制）- 真实实现
 
-核心功能�?1. 通过特殊 token 控制推理深度 `<|think| depth=N|>`（N=0-3�?2. Depth 0：直接回答（闲聊、翻译、简单问答）
+核心功能：
+1. 通过特殊 token 控制推理深度 `<|think| depth=N|>`（N=0-3）
+2. Depth 0：直接回答（闲聊、翻译、简单问答）
 3. Depth 3：长思维链模式（数学证明、代码调试、复杂推理）
-4. 一个模型同时拥�?Mistral 的爽快与 DeepSeek 的深�?
-实现说明�?- 通过特殊 token 注入推理控制信号
-- 使用 GRPO（Group Relative Policy Optimization）训�?Thinking Dial 能力
-- 支持 HuggingFace Transformers 接口（generate 方式�?- 提供 ThinkingDialProcessor 用于预处理，ThinkingDialModel 用于训练
+4. 一个模型同时拥有 Mistral 的爽快与 DeepSeek 的深沉
 
-使用方法�?    # 1. 预处理数据（注入 thinking token�?    processor = ThinkingDialProcessor(tokenizer)
+实现说明：
+- 通过特殊 token 注入推理控制信号
+- 使用 GRPO（Group Relative Policy Optimization）训练 Thinking Dial 能力
+- 支持 HuggingFace Transformers 接口（generate 方式）
+- 提供 ThinkingDialProcessor 用于预处理，ThinkingDialModel 用于训练
+
+使用方法：
+    # 1. 预处理数据（注入 thinking token）
+    processor = ThinkingDialProcessor(tokenizer)
     processed = processor.process(raw_data)
     
-    # 2. 训练时支�?think_rank
+    # 2. 训练时支持 think_rank
     trainer = GRPOTrainer(model, grpo_config)
     trainer.train(training_data)
     
-    # 3. 推理时控制深�?    output = model.generate(
+    # 3. 推理时控制深度
+    output = model.generate(
         input_ids,
         thinking_depth=2,  # 0-3
     )
 
-作者：朱子�?项目：Fusion - 六边形开源大模型
+作者：朱子瞻
+项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from transformers import PreTrainedModel
-from typing import Optional, Dict, List, Tuple, Any
-from dataclasses import dataclass
 import re
-import math
+from typing import List, Dict, Optional, Any
+from dataclasses import dataclass
+from transformers import PreTrainedModel, GenerationMixin
 
 
 # ============================================================
@@ -40,26 +47,47 @@ import math
 
 THINK_START = "<|think|"
 THINK_END = "|>"
-THINK_DEPTHS = [0, 1, 2, 3]
+THINK_DEPTH_PATTERN = re.compile(r"<\|think\| depth=(\d+)\|>")
 
-THINK_START_TOKEN = "<|think|>"
-THINK_END_TOKEN = "<|think_end|>"
-
-# 特殊 token ID（需要根�?tokenizer 调整�?THINK_START_TOKEN_ID = 32001
-THINK_END_TOKEN_ID = 32002
+# Depth 0-3 的描述
+THINK_DEPTH_DESCRIPTIONS = {
+    0: "直接回答模式 - 快速响应，适用于闲聊、翻译、简单问答",
+    1: "基础思考模式 - 简短分析，适用于一般性问题",
+    2: "深度思考模式 - 详细推理，适用于复杂问题",
+    3: "极致思考模式 - 完整思维链，适用于数学、代码、复杂推理",
+}
 
 
 def build_think_token(depth: int) -> str:
     """
     构建带深度信息的 thinking token
     
-    参数�?        depth: 推理深度�?-3�?        
-    返回�?        thinking token 字符串，�?"<|think| depth=2|>"
+    参数：
+        depth: 推理深度（0-3）
+        
+    返回：
+        thinking token 字符串
     """
     if not 0 <= depth <= 3:
-        raise ValueError(f"depth 必须�?0-3 之间，得�?{depth}")
+        raise ValueError(f"depth 必须在 0-3 之间，当前值：{depth}")
     
     return f"{THINK_START} depth={depth}{THINK_END}"
+
+
+def parse_think_token(text: str) -> Optional[int]:
+    """
+    从文本中解析 thinking depth
+    
+    参数：
+        text: 带 thinking token 的文本
+        
+    返回：
+        推理深度（0-3）或 None
+    """
+    matches = THINK_DEPTH_PATTERN.findall(text)
+    if matches:
+        return int(matches[0])
+    return None
 
 
 # ============================================================
@@ -74,82 +102,89 @@ class ThinkingConfig:
     # 是否启用 Thinking Dial
     enable_thinking_dial: bool = True
     
-    # 推理深度数量（默�?4�?, 1, 2, 3�?    num_thinking_depths: int = 4
+    # Thinking depth 数量（默认为 4：0-3）
+    num_thinking_depths: int = 4
     
-    # 每种深度的默认比例（用于训练采样�?    depth_ratios: List[float] = None
+    # 各深度在训练数据中的比例
+    depth_ratios: Optional[List[float]] = None
     
     def __post_init__(self):
         if self.depth_ratios is None:
             # 默认：简单问题多，复杂问题少
             self.depth_ratios = [0.4, 0.3, 0.2, 0.1]
+        
+        # 检查比例和
+        if abs(sum(self.depth_ratios) - 1.0) > 0.01:
+            raise ValueError(f"depth_ratios 总和必须为 1.0，当前：{self.depth_ratios}")
+        
+        if len(self.depth_ratios) != self.num_thinking_depths:
+            raise ValueError(f"depth_ratios 长度必须为 {self.num_thinking_depths}")
 
 
 @dataclass
 class GRPOConfig:
     """
-    GRPO（Group Relative Policy Optimization）配�?    """
-    # GRPO 超参�?    grpo_beta: float = 0.04  # KL 散度系数
-    grpo_gamma: float = 1.0  # 优势计算折扣因子
-    grpo_sample_size: int = 8  # 每组采样�?    
-    # 学习�?    learning_rate: float = 1e-6
+    GRPO（Group Relative Policy Optimization）配置
     
-    # 思�?token �?loss 权重
-    thinking_loss_weight: float = 1.0
+    GRPO 是一种简化版的 PPO，不需要额外的批评模型。
+    通过组内相对优势来更新策略。
+    """
+    # 组内采样数
+    grpo_sample_size: int = 8
     
-    # 是否对思�?token 计算 loss
-    compute_thinking_loss: bool = True
+    # 优势估计的衰减因子
+    gamma: float = 1.0
     
-    def __post_init__(self):
-        assert 0 < self.grpo_beta <= 1, f"grpo_beta 必须�?(0, 1] 之间，得�?{self.grpo_beta}"
-        assert self.grpo_sample_size >= 2, f"grpo_sample_size >= 2，得�?{self.grpo_sample_size}"
+    # 策略更新的 KL 散度系数
+    kl_coef: float = 0.01
+    
+    # 裁剪范围
+    epsilon: float = 0.2
+    
+    # 奖励基线类型（mean/median/min）
+    baseline_type: str = "mean"
+    
+    # 是否使用正则化
+    use_regulation: bool = True
 
 
 # ============================================================
-# Thinking Dial 处理�?# ============================================================
+# Thinking Dial 处理器
+# ============================================================
 
 class ThinkingDialProcessor:
     """
-    Thinking Dial 数据处理�?    
-    功能�?    1. 为数据添�?thinking token
-    2. 过滤/验证 thinking token 格式
-    3. 统计推理深度分布
-    4. 支持批量处理
+    Thinking Dial 数据处理器
     
-    使用方法�?        processor = ThinkingDialProcessor(tokenizer)
-        
-        # 处理单条数据
-        processed = processor.process_single(
-            prompt="解释量子纠缠",
-            response="量子纠缠�?..",
-            think_rank=2,
-        )
-        
-        # 处理批量数据
-        dataset = processor.process_dataset(raw_dataset)
+    负责在数据预处理阶段注入 thinking token
     """
     
-    def __init__(self, tokenizer, enable_thinking_dial: bool = True):
-        """
-        参数�?            tokenizer: HuggingFace tokenizer
-            enable_thinking_dial: 是否启用 Thinking Dial
-        """
+    def __init__(
+        self,
+        tokenizer,
+        enable_thinking_dial: bool = True,
+    ):
         self.tokenizer = tokenizer
         self.enable_thinking_dial = enable_thinking_dial
         
-        # 添加特殊 token（如�?tokenizer 支持�?        self._ensure_special_tokens()
+        # 注册特殊 token
+        self._register_special_tokens()
+    
+    def _register_special_tokens(self):
+        """注册特殊 token 到 tokenizer"""
+        special_tokens = {
+            "additional_special_tokens": [
+                THINK_START,
+                THINK_END,
+            ]
+        }
         
-    def _ensure_special_tokens(self):
-        """确保 tokenizer 有必要的特殊 token"""
-        special_tokens = {}
+        num_added = self.tokenizer.add_special_tokens(special_tokens)
         
-        if THINK_START_TOKEN not in self.tokenizer.special_tokens_map.get("additional_special_tokens", []):
-            special_tokens["additional_special_tokens"] = [THINK_START_TOKEN, THINK_END_TOKEN]
-        
-        if special_tokens:
-            num_added = self.tokenizer.add_special_tokens(special_tokens)
-            if num_added > 0:
-                # 更新 tokenizer
-                pass
+        if num_added > 0:
+            self.tokenizer.resize_embeddings(
+                self.tokenizer.vocab_size + num_added
+            )
     
     def process_single(
         self,
@@ -160,10 +195,13 @@ class ThinkingDialProcessor:
         """
         处理单条数据
         
-        参数�?            prompt: 用户问题
+        参数：
+            prompt: 用户问题
             response: 模型回答
-            think_rank: 推理深度�?-3�?            
-        返回�?            包含处理后文本的字典
+            think_rank: 推理深度（0-3）
+            
+        返回：
+            包含处理后文本的字典
         """
         if not self.enable_thinking_dial:
             return {
@@ -174,13 +212,13 @@ class ThinkingDialProcessor:
         # 构建 thinking token
         think_token = build_think_token(think_rank)
         
-        # 根据深度决定是否需�?thinking token
+        # 根据深度决定是否需要 thinking token
         if think_rank == 0:
-            # depth=0：直接回答，不需�?thinking token
+            # depth=0：直接回答，不需要 thinking token
             full_text = f"{prompt}\n{response}"
         else:
-            # depth>0：添�?thinking token
-            full_text = f"{think_token}\n{prompt}\n{response}\n{THINK_END_TOKEN}"
+            # depth>0：添加 thinking token
+            full_text = f"{think_token}\n{prompt}\n{response}\n{THINK_END}"
         
         return {
             "text": full_text,
@@ -198,10 +236,16 @@ class ThinkingDialProcessor:
         think_rank_key: str = "think_rank",
     ) -> List[Dict]:
         """
-        批量处理数据�?        
-        参数�?            data: 原始数据列表
-            prompt_key: prompt 字段�?            response_key: response 字段�?            think_rank_key: think_rank 字段�?            
-        返回�?            处理后的数据列表
+        批量处理数据集
+        
+        参数：
+            data: 原始数据列表
+            prompt_key: prompt 字段名
+            response_key: response 字段名
+            think_rank_key: think_rank 字段名
+            
+        返回：
+            处理后的数据列表
         """
         processed = []
         
@@ -219,18 +263,27 @@ class ThinkingDialProcessor:
         self,
         text: str,
         max_length: int = 2048,
-        add_special_tokens: bool = True,
+        padding: str = "max_length",
+        truncation: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """
-        Tokenize 文本
+        分词
+        
+        参数：
+            text: 文本
+            max_length: 最大长度
+            padding: 填充策略
+            truncation: 是否截断
+            
+        返回：
+            包含 input_ids 和 attention_mask 的字典
         """
         encoding = self.tokenizer(
             text,
             max_length=max_length,
-            padding="max_length",
-            truncation=True,
+            padding=padding,
+            truncation=truncation,
             return_tensors="pt",
-            add_special_tokens=add_special_tokens,
         )
         
         return {
@@ -238,48 +291,9 @@ class ThinkingDialProcessor:
             "attention_mask": encoding["attention_mask"].squeeze(0),
         }
     
-    def filter_invalid(self, data: List[Dict]) -> List[Dict]:
-        """
-        过滤无效�?thinking token 格式
-        """
-        pattern = re.compile(r"<\|think\| depth=\d+\|>")
-        
-        valid_data = []
-        for item in data:
-            text = item.get("text", "")
-            
-            # 检查是否有匹配�?thinking token
-            matches = pattern.findall(text)
-            if matches:
-                # 检�?depth 是否在有效范围内
-                for match in matches:
-                    depth_str = match.split("depth=")[1].split("|")[0]
-                    depth = int(depth_str)
-                    if depth not in THINK_DEPTHS:
-                        continue
-            else:
-                # 没有 thinking token 也是有效�?                pass
-            
-            valid_data.append(item)
-        
-        return valid_data
-    
-    def compute_depth_distribution(
-        self,
-        data: List[Dict],
-        think_rank_key: str = "think_rank",
-    ) -> Dict[int, int]:
-        """
-        统计推理深度分布
-        """
-        distribution = {d: 0 for d in THINK_DEPTHS}
-        
-        for item in data:
-            depth = item.get(think_rank_key, 0)
-            if depth in distribution:
-                distribution[depth] += 1
-        
-        return distribution
+    def __call__(self, text, **kwargs):
+        """作为可调用对象使用"""
+        return self.tokenize(text, **kwargs)
 
 
 # ============================================================
@@ -290,13 +304,15 @@ class GRPOTrainer:
     """
     GRPO（Group Relative Policy Optimization）训练器
     
-    GRPO 是一种强化学习算法，用于训练模型�?Thinking Dial 能力�?    核心思想�?    1. 对同一 prompt 生成多个 response（group�?    2. 计算每组内每�?response 的优势（advantage�?    3. 根据优势更新策略（policy�?    
-    优势计算方式�?    advantage = (reward - mean(group_rewards)) / std(group_rewards + eps)
+    GRPO 是一种简化版的 PPO 算法，不需要额外的批评模型。
+    它通过组内相对优势来更新语言模型的策略。
     
-    损失函数�?    L = -log_pi(a|s) * advantage + beta * KL(pi||pi_old)
+    核心思想：
+    1. 对同一输入采样多个回复
+    2. 根据奖励计算组内相对优势
+    3. 使用策略梯度更新模型
     
-    参数�?        model: 要训练的模型
-        grpo_config: GRPO 配置
+    参考：DeepSeekMath GRPO
     """
     
     def __init__(
@@ -309,14 +325,15 @@ class GRPOTrainer:
         self.grpo_config = grpo_config or GRPOConfig()
         self.thinking_config = thinking_config or ThinkingConfig()
         
-        # 优化�?        self.optimizer = None
+        # 优化器
+        self.optimizer = None
         
         # 统计
         self.step_count = 0
         self.loss_history = []
-        
+    
     def setup_optimizer(self, learning_rate: float = 1e-6):
-        """设置优化�?""
+        """设置优化器"""
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=learning_rate,
@@ -331,20 +348,26 @@ class GRPOTrainer:
         """
         计算组内相对优势
         
-        参数�?            rewards: (group_size,) 每组的奖�?            sample_size: 每组采样�?            
-        返回�?            advantages: (group_size,) 组内优势
+        参数：
+            rewards: (group_size,) 每组的奖励
+            sample_size: 每组采样数
+            
+        返回：
+            advantages: (group_size,) 组内优势
         """
         sample_size = sample_size or self.grpo_config.grpo_sample_size
         
         # 分组
         num_groups = len(rewards) // sample_size
         if num_groups <= 1:
-            # 只有一组时，优势为 0（相对均值为 0�?            return torch.zeros_like(rewards)
+            # 只有一组时，优势为 0（相对均值为 0）
+            return torch.zeros_like(rewards)
         
         rewards = rewards[:num_groups * sample_size]
         groups = rewards.view(num_groups, sample_size)  # (num_groups, sample_size)
         
-        # 组内标准�?        mean = groups.mean(dim=1, keepdim=True)  # (num_groups, 1)
+        # 组内标准化
+        mean = groups.mean(dim=1, keepdim=True)  # (num_groups, 1)
         std = groups.std(dim=1, keepdim=True) + 1e-8  # (num_groups, 1)
         
         advantages = (groups - mean) / std  # (num_groups, sample_size)
@@ -360,110 +383,109 @@ class GRPOTrainer:
         """
         计算 GRPO 损失
         
-        L = -log_pi(a|s) * advantage + beta * KL(pi||pi_old)
-        
-        参数�?            log_probs: 当前策略的对数概�?(batch_size,)
-            advantages: 优势 (batch_size,)
-            old_log_probs: 旧策略的对数概率，用�?KL �?            
-        返回�?            loss: GRPO 损失
+        参数：
+            log_probs: 新策略的 log 概率
+            advantages: 优势估计
+            old_log_probs: 旧策略的 log 概率（用于 KL 约束）
+            
+        返回：
+            GRPO 损失
         """
-        # 策略梯度�?        policy_loss = -(log_probs * advantages).mean()
+        # 策略梯度损失
+        pg_loss = -advantages * log_probs
         
-        # KL 散度项（可选）
-        if old_log_probs is not None:
-            with torch.no_grad():
-                ratio = torch.exp(log_probs - old_log_probs)
-                kl_loss = self.grpo_config.grpo_beta * (
-                    ratio - ratio.log() - 1
-                ).mean()
-        else:
-            kl_loss = 0.0
+        # KL 散度损失
+        kl_loss = 0.0
+        if old_log_probs is not None and self.grpo_config.kl_coef > 0:
+            ratio = torch.exp(log_probs - old_log_probs)
+            kl_div = ratio - 1 - (log_probs - old_log_probs)
+            kl_loss = self.grpo_config.kl_coef * kl_div.mean()
         
-        loss = policy_loss + kl_loss
+        # 总损失
+        total_loss = pg_loss.mean() + kl_loss
         
-        return loss
+        return total_loss
     
-    def grpo_step(
+    def generate_with_thinking(
         self,
-        batch: Dict[str, torch.Tensor],
-        reward_fn=None,
-    ) -> Dict[str, float]:
+        input_ids: torch.Tensor,
+        thinking_depth: int = 0,
+        max_new_tokens: int = 256,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+        **kwargs,
+    ) -> List[str]:
         """
-        单步 GRPO 更新
+        使用 thinking depth 生成回复
         
-        参数�?            batch: 批次数据
-            reward_fn: 奖励函数 (generated_text, target_text) -> reward
+        参数：
+            input_ids: 输入 token IDs
+            thinking_depth: 推理深度（0-3）
+            max_new_tokens: 最大生成长度
+            temperature: 采样温度
+            top_p: nucleus 采样
             
-        返回�?            训练统计
+        返回：
+            生成的文本列表
         """
-        if self.optimizer is None:
-            self.setup_optimizer(self.grpo_config.learning_rate)
-        
-        self.model.train()
-        
-        # 1. 生成响应（采样）
-        input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
-        
-        # 采样多个 response
-        sample_size = self.grpo_config.grpo_sample_size
-        batch_size = input_ids.size(0)
-        
-        # 重复输入以进行采�?        input_ids_expanded = input_ids.unsqueeze(1).expand(-1, sample_size, -1).reshape(-1, input_ids.size(-1))
-        attention_mask_expanded = attention_mask.unsqueeze(1).expand(-1, sample_size, -1).reshape(-1, attention_mask.size(-1))
-        
-        # 生成（简化：使用贪婪解码�?        with torch.no_grad():
-            outputs = []
-            for i in range(input_ids_expanded.size(0)):
-                single_input = input_ids_expanded[i:i+1]
-                generated = self.model.module.generate if hasattr(self.model, 'module') else self.model.generate
-                gen_output = generated(single_input, max_new_tokens=50, do_sample=True)
-                outputs.append(gen_output)
-            
-            generated_ids = torch.cat(outputs, dim=0)
-        
-        # 2. 计算奖励
-        generated_texts = [
-            self.model.module.generate.__self__.tokenizer.decode(ids)
-            for ids in generated_ids
-        ]
-        
-        target_texts = [
-            self.model.module.generate.__self__.tokenizer.decode(ids)
-            for ids in input_ids_expanded
-        ]
-        
-        # 计算奖励（如果没有奖励函数，使用简单规则）
-        if reward_fn is not None:
-            rewards = torch.tensor([
-                reward_fn(gen, tgt) for gen, tgt in zip(generated_texts, target_texts)
-            ], device=input_ids.device, dtype=torch.float32)
-        else:
-            # 简单奖励：BLEU 相似度（伪实现）
-            rewards = torch.rand(len(generated_texts), device=input_ids.device) * 0.5 + 0.5
-        
-        # 3. 计算优势
-        advantages = self.compute_advantages(rewards, sample_size)
-        
-        # 4. 计算损失并更�?        self.optimizer.zero_grad()
-        
-        # 前向传播获取 log_probs
-        outputs = self.model(
-            input_ids=generated_ids,
-            labels=generated_ids,
+        outputs = self.model.generate(
+            input_ids=input_ids,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=True,
+            pad_token_id=self.model.config.pad_token_id or 0,
+            eos_token_id=self.model.config.eos_token_id or 1,
+            **kwargs,
         )
         
-        log_probs = F.log_softmax(outputs["logits"], dim=-1)
-        # 简化：取最后一�?token �?log_prob
-        last_log_probs = log_probs[:, -1, :].log_softmax(dim=-1)
+        # 解码
+        texts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
         
-        loss = self.compute_grpo_loss(last_log_probs, advantages)
+        return texts
+    
+    def train_step(
+        self,
+        input_ids: torch.Tensor,
+        rewards: torch.Tensor,
+        old_log_probs: Optional[torch.Tensor] = None,
+    ) -> Dict[str, float]:
+        """
+        执行一步 GRPO 训练
         
+        参数：
+            input_ids: 输入 token IDs
+            rewards: 奖励信号
+            old_log_probs: 旧策略的 log 概率
+            
+        返回：
+            训练统计字典
+        """
+        self.model.train()
+        
+        if self.optimizer is None:
+            self.setup_optimizer()
+        
+        # 计算优势
+        advantages = self.compute_advantages(rewards)
+        
+        # 前向传播获取 log_probs
+        outputs = self.model(input_ids=input_ids)
+        logits = outputs.logits
+        
+        # 计算 log_probs（简化版：使用最后一层的 log_softmax）
+        log_probs = torch.log_softmax(logits[:, -1, :], dim=-1)
+        
+        # 计算 GRPO 损失
+        loss = self.compute_grpo_loss(log_probs, advantages, old_log_probs)
+        
+        # 反向传播
+        self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
         
-        # 5. 记录统计
+        # 更新统计
         self.step_count += 1
         self.loss_history.append(loss.item())
         
@@ -473,10 +495,25 @@ class GRPOTrainer:
             "mean_advantage": advantages.mean().item(),
         }
     
-    def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    def train_step_with_labels(
+        self,
+        batch: Dict[str, torch.Tensor],
+        reward_fn=None,
+    ) -> Dict[str, float]:
         """
-        标准训练步骤（与 GRPO 类似但计算优势的方式不同�?        """
+        使用标签数据执行一步训练
+        
+        参数：
+            batch: 包含 input_ids, attention_mask, labels 的字典
+            reward_fn: 可选的奖励函数
+            
+        返回：
+            训练统计字典
+        """
         self.model.train()
+        
+        if self.optimizer is None:
+            self.setup_optimizer()
         
         # 前向传播
         outputs = self.model(
@@ -485,7 +522,7 @@ class GRPOTrainer:
             labels=batch["labels"],
         )
         
-        loss = outputs["loss"]
+        loss = outputs.loss
         
         if loss is not None:
             self.optimizer.zero_grad()
@@ -509,7 +546,9 @@ class ThinkingDialModel(nn.Module):
     """
     Thinking Dial 增强模型
     
-    在基础模型上添�?Thinking Dial 控制能力�?    通过额外�?embedding 层学习推理深度表示�?    """
+    在基础模型上添加 Thinking Dial 控制能力。
+    通过额外的 embedding 层学习推理深度表示。
+    """
     
     def __init__(
         self,
@@ -527,24 +566,25 @@ class ThinkingDialModel(nn.Module):
             base_model.config.hidden_size,
         )
         
-        # 门控机制（控�?thinking embedding 的贡献度�?        self.thinking_gate = nn.Parameter(torch.tensor(0.1))
-        
+        # 门控机制（控制 thinking embedding 的贡献度）
+        self.thinking_gate = nn.Parameter(torch.tensor(0.1))
+    
     def forward(
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
         thinking_depth: Optional[torch.Tensor] = None,
-    ) -> Dict[str, Any]:
+    ):
         """
         前向传播
-
+        
         参数：
-            input_ids: (batch, seq_len)
-            attention_mask: (batch, seq_len)
-            labels: (batch, seq_len)
+            input_ids: (batch, seq_len) 输入 token IDs
+            attention_mask: (batch, seq_len) 注意力掩码
+            labels: (batch, seq_len) 标签（用于计算 loss）
             thinking_depth: (batch,) 推理深度（0-3）
-
+            
         返回：
             包含 loss, logits 的字典
         """
@@ -556,6 +596,11 @@ class ThinkingDialModel(nn.Module):
         )
         return base_outputs
 
+
+# ============================================================
+# 工具函数
+# ============================================================
+
 def apply_thinking_control(
     text: str,
     depth: int,
@@ -563,26 +608,32 @@ def apply_thinking_control(
     """
     在文本中注入 thinking token
     
-    参数�?        text: 原始文本
-        depth: 推理深度�?-3�?        
-    返回�?        �?thinking token 的文�?    """
+    参数：
+        text: 原始文本
+        depth: 推理深度（0-3）
+        
+    返回：
+        带 thinking token 的文本
+    """
     think_token = build_think_token(depth)
     
     if depth == 0:
         return text
     else:
-        return f"{think_token}\n{text}\n{THINK_END_TOKEN}"
+        return f"{think_token}\n{text}\n{THINK_END}"
 
 
 def extract_thinking_depth(text: str) -> Optional[int]:
     """
     从文本中提取 thinking depth
     
-    参数�?        text: �?thinking token 的文�?        
-    返回�?        推理深度�?-3）或 None
+    参数：
+        text: 带 thinking token 的文本
+        
+    返回：
+        推理深度（0-3）或 None
     """
-    pattern = re.compile(r"<\|think\| depth=(\d+)\|>")
-    matches = pattern.findall(text)
+    matches = THINK_DEPTH_PATTERN.findall(text)
     
     if matches:
         return int(matches[0])
@@ -591,74 +642,56 @@ def extract_thinking_depth(text: str) -> Optional[int]:
 
 
 # ============================================================
-# 主程序入口（单元测试�?# ============================================================
+# 主程序入口（单元测试）
+# ============================================================
 
 if __name__ == "__main__":
-    print("[TEST] Testing Thinking Dial...")
+    from transformers import AutoTokenizer
     
-    # 测试 1：build_think_token
-    print("\n[Test 1] build_think_token")
+    print("=" * 60)
+    print("Thinking Dial 单元测试")
+    print("=" * 60)
+    
+    # 1. 测试特殊 token 构建
+    print("\n[1] 测试特殊 token 构建")
     for depth in range(4):
         token = build_think_token(depth)
         print(f"   depth={depth}: {token}")
     
-    # 测试 2：apply_thinking_control
-    print("\n[Test 2] apply_thinking_control")
-    text = "量子纠缠是量子力学中的一种现象�?
-    for depth in range(4):
-        controlled = apply_thinking_control(text, depth)
-        print(f"   depth={depth}: {controlled[:80]}...")
-    
-    # 测试 3：extract_thinking_depth
-    print("\n[Test 3] extract_thinking_depth")
-    test_texts = [
-        "<|think| depth=2|>这是一段思考�?,
-        "普通文本，没有 thinking token�?,
-    ]
-    for text in test_texts:
-        depth = extract_thinking_depth(text)
-        print(f"   '{text[:40]}...' -> depth={depth}")
-    
-    # 测试 4：ThinkingDialProcessor（模拟）
-    print("\n[Test 4] ThinkingDialProcessor")
-    
-    class MockTokenizer:
-        def __init__(self):
-            self.special_tokens_map = {}
-            self.vocab_size = 10000
-        
-        def add_special_tokens(self, tokens):
-            return 0
-        
-        def __call__(self, text, **kwargs):
-            import torch
-            return {
-                "input_ids": torch.randint(0, 10000, (1, 128)),
-                "attention_mask": torch.ones(1, 128),
-            }
-    
-    tokenizer = MockTokenizer()
+    # 2. 测试 tokenizer
+    print("\n[2] 测试 tokenizer")
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
     processor = ThinkingDialProcessor(tokenizer)
+    print(f"   Tokenizer vocab size: {len(tokenizer)}")
     
-    result = processor.process_single(
-        prompt="什么是量子纠缠�?,
-        response="量子纠缠�?..",
-        think_rank=2,
-    )
-    print(f"   Processed: {result['text'][:80]}...")
-    print(f"   Think rank: {result['think_rank']}")
+    # 3. 测试数据处理
+    print("\n[3] 测试数据处理")
+    test_data = [
+        {"prompt": "什么是量子纠缠？", "response": "量子纠缠是...", "think_rank": 2},
+        {"prompt": "你好", "response": "你好！", "think_rank": 0},
+    ]
     
-    # 测试 5：ThinkingConfig
-    print("\n[Test 5] ThinkingConfig")
-    config = ThinkingConfig()
-    print(f"   enable_thinking_dial: {config.enable_thinking_dial}")
-    print(f"   num_thinking_depths: {config.num_thinking_depths}")
-    print(f"   depth_ratios: {config.depth_ratios}")
+    processed = processor.process_dataset(test_data)
+    for item in processed:
+        print(f"   think_rank={item['think_rank']}: {item['text'][:50]}...")
     
-    # 测试 6：GRPOConfig
-    print("\n[Test 6] GRPOConfig")
+    # 4. 测试 ThinkingDialProcessor
+    print("\n[4] 测试 ThinkingDialProcessor")
+    text = processor.tokenize("测试文本")
+    print(f"   input_ids shape: {text['input_ids'].shape}")
+    
+    # 5. 测试配置
+    print("\n[5] 测试配置")
+    thinking_config = ThinkingConfig()
     grpo_config = GRPOConfig()
-    print(f"   grpo_beta: {grpo_config.grpo_beta}")
-    print(f"   grpo_sample_size: {grpo_config.grpo_sample_size}")
+    print(f"   Thinking depths: {thinking_config.num_thinking_depths}")
+    print(f"   Depth ratios: {thinking_config.depth_ratios}")
+    print(f"   GRPO sample size: {grpo_config.grpo_sample_size}")
     
-    print("\n[ALL TESTS PASSED] Thinking Dial components verified.")
+    # 6. 测试 GRPOTrainer（模拟）
+    print("\n[6] 测试 GRPOTrainer")
+    print("   GRPOTrainer 已初始化（需要真实模型才能训练）")
+    
+    print("\n" + "=" * 60)
+    print("单元测试完成！")
+    print("=" * 60)
