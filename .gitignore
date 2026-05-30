@@ -82,3 +82,8 @@ htmlcov/
 
 # OS
 Thumbs.db
+.DS_Store
+NUL
+CON
+PRN
+AUX
