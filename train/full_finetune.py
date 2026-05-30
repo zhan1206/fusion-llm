@@ -2,17 +2,18 @@
 Fusion 模型全参数微调脚本
 
 支持：
+- 本地 FusionModel（无需预训练权重）
 - 8B 模型：单卡 24GB（开启 ZeRO-3 offload）
 - 14B 模型：双卡 24GB 或单卡 48GB
 - DeepSpeed ZeRO-3 支持
 - 混合精度训练（BF16/FP16）
 
 使用方法：
-    # 8B 模型，单卡 24GB
-    deepspeed train/full_finetune.py --model_size 8B --deepspeed configs/ds_zero3.json
-    
-    # 14B 模型，双卡 24GB（DDP）
-    torchrun --nproc_per_node=2 train/full_finetune.py --model_size 14B
+    # 本地模型全参微调
+    python train/full_finetune.py --local_model --data_path data/example_data.json
+
+    # 8B 模型 + DeepSpeed ZeRO-3
+    deepspeed train/full_finetune.py --local_model --model_size 8B --deepspeed configs/ds_zero3.json --data_path data/example_data.json
 
 作者：朱子瞻
 项目：Fusion - 六边形开源大模型
@@ -21,27 +22,46 @@ Fusion 模型全参数微调脚本
 
 import argparse
 import torch
+import torch.nn as nn
 import deepspeed
 from transformers import (
-    AutoModelForCausalLM,
     AutoTokenizer,
     get_linear_schedule_with_warmup,
 )
+from torch.utils.data import Dataset, DataLoader
 import json
 import os
-from torch.utils.data import Dataset, DataLoader
+import sys
 import logging
-from tqdm import tqdm
+
+# 添加项目根目录到路径
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from models import FusionModel, FusionConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# 数据格式说明
+# ============================================================
+"""
+训练数据格式（JSON）：
+[
+    {
+        "prompt": "解释量子纠缠",
+        "response": "量子纠缠是...",
+        "think_rank": 2
+    },
+    ...
+]
+"""
+
+
 class FusionFullFinetuneDataset(Dataset):
     """
     全参数微调数据集
-    
-    数据格式与 LoRA 相同，但支持更大批量
     """
     
     def __init__(
@@ -56,7 +76,7 @@ class FusionFullFinetuneDataset(Dataset):
         with open(data_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
         
-        logger.info(f"✅ 加载数据集：{len(self.data)} 条样本")
+        logger.info(f"[FusionFullFinetuneDataset] 加载数据集：{len(self.data)} 条样本")
         
     def __len__(self):
         return len(self.data)
@@ -66,8 +86,13 @@ class FusionFullFinetuneDataset(Dataset):
         
         prompt = item["prompt"]
         response = item["response"]
+        think_rank = item.get("think_rank", 0)
         
-        full_text = f"{prompt}\n{response}"
+        if think_rank > 0:
+            thinking_token = f"<|think| depth={think_rank}|>"
+            full_text = f"{thinking_token}\n{prompt}\n{response}"
+        else:
+            full_text = f"{prompt}\n{response}"
         
         encoding = self.tokenizer(
             full_text,
@@ -84,48 +109,92 @@ class FusionFullFinetuneDataset(Dataset):
         }
 
 
-def create_model(model_size: str, torch_dtype=torch.bfloat16):
+def create_local_model(
+    model_size: str = "8B",
+    torch_dtype: torch.dtype = torch.bfloat16,
+):
     """
-    创建模型（全参数）
+    创建本地 FusionModel（无需预训练权重）
     """
-    model_name = f"fusion-{model_size.lower()}-base"
+    model_configs = {
+        "0.5B": dict(vocab_size=32000, hidden_size=2048, num_hidden_layers=16,
+                     num_attention_heads=16, num_key_value_heads=8, intermediate_size=5504),
+        "1.5B": dict(vocab_size=32000, hidden_size=3072, num_hidden_layers=24,
+                     num_attention_heads=24, num_key_value_heads=8, intermediate_size=8192),
+        "8B": dict(vocab_size=100000, hidden_size=4096, num_hidden_layers=32,
+                   num_attention_heads=32, num_key_value_heads=8, intermediate_size=11008),
+        "14B": dict(vocab_size=100000, hidden_size=5120, num_hidden_layers=40,
+                    num_attention_heads=40, num_key_value_heads=8, intermediate_size=13824),
+    }
     
-    logger.info(f"📦 加载模型（全参数）：{model_name}")
+    if model_size not in model_configs:
+        raise ValueError(f"不支持的模型大小：{model_size}")
     
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch_dtype,
-        use_cache=False,  # 训练时禁用 KV 缓存
+    config_dict = model_configs[model_size]
+    
+    common_config = dict(
+        block_size=512,
+        latent_dim=64,
+        window_size=2048,
+        sbla_mode="mixed",
+        rms_norm_eps=1e-6,
+        rope_theta=10000.0,
+        tie_word_embeddings=False,
+        enable_thinking_dial=True,
+        num_thinking_depths=4,
     )
     
-    return model
+    config = FusionConfig(**config_dict, **common_config)
+    
+    logger.info(f"[create_local_model] 创建 Fusion-{model_size}（随机初始化）")
+    logger.info(f"  hidden_size={config.hidden_size}, layers={config.num_hidden_layers}, "
+                f"heads={config.num_attention_heads}")
+    
+    model = FusionModel(config)
+    
+    total_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"[create_local_model] 参数总量：{total_params / 1e9:.2f}B")
+    
+    return model, config
+
+
+def create_tokenizer(vocab_size: int = 32000):
+    """
+    创建 tokenizer
+    """
+    logger.info(f"[create_tokenizer] 创建 tokenizer（vocab_size={vocab_size}）")
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    return tokenizer
 
 
 def train(args):
     """
     主训练函数
     """
-    logger.info("🚀 开始全参数微调")
-    logger.info(f"📊 模型大小：{args.model_size}")
-    logger.info(f"📊 使用 DeepSpeed：{args.deepspeed is not None}")
+    logger.info("=" * 60)
+    logger.info("[train] 开始全参数微调")
+    logger.info(f"  模型大小：{args.model_size}")
+    logger.info(f"  使用 DeepSpeed：{args.deepspeed is not None}")
+    logger.info(f"  数据路径：{args.data_path}")
+    logger.info("=" * 60)
     
-    # 1. 初始化分布式训练（如果使用 torchrun）
+    # 1. 设备设置
     if args.local_rank == -1:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"💻 单卡训练，设备：{device}")
+        logger.info(f"[train] 单卡训练，设备：{device}")
     else:
         torch.cuda.set_device(args.local_rank)
         device = torch.device("cuda", args.local_rank)
-        logger.info(f"💻 分布式训练，local_rank：{args.local_rank}")
+        logger.info(f"[train] 分布式训练，local_rank：{args.local_rank}")
     
     # 2. 加载 tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        f"fusion-{args.model_size.lower()}-base"
-    )
-    tokenizer.pad_token = tokenizer.eos_token
+    vocab_size_map = {"0.5B": 32000, "1.5B": 32000, "8B": 100000, "14B": 100000}
+    tokenizer = create_tokenizer(vocab_size=vocab_size_map.get(args.model_size, 32000))
     
-    # 3. 创建模型
-    model = create_model(args.model_size)
+    # 3. 创建模型（本地随机初始化）
+    model, config = create_local_model(args.model_size, torch_dtype=args.torch_dtype)
     
     # 4. 加载数据集
     train_dataset = FusionFullFinetuneDataset(
@@ -139,6 +208,7 @@ def train(args):
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
+        pin_memory=True,
     )
     
     # 5. 优化器
@@ -159,10 +229,9 @@ def train(args):
         num_training_steps=total_steps,
     )
     
-    # 7. DeepSpeed 初始化（如果启用）
+    # 7. DeepSpeed 初始化
     if args.deepspeed:
-        logger.info(f"🔧 使用 DeepSpeed：{args.deepspeed}")
-        
+        logger.info(f"[train] 使用 DeepSpeed：{args.deepspeed}")
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
@@ -173,24 +242,20 @@ def train(args):
         model_engine = None
     
     # 8. 训练循环
-    logger.info("🏃 开始训练...")
+    logger.info("[train] 开始训练循环...")
     
     global_step = 0
     
     for epoch in range(args.num_epochs):
-        logger.info(f"📅 Epoch {epoch + 1}/{args.num_epochs}")
+        logger.info(f"[train] Epoch {epoch + 1}/{args.num_epochs}")
         
         model.train()
         
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}")
-        
-        for step, batch in enumerate(progress_bar):
-            # 移动数据到设备
+        for step, batch in enumerate(train_loader):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
             
-            # 前向传播
             if args.deepspeed:
                 outputs = model_engine(
                     input_ids=input_ids,
@@ -198,8 +263,6 @@ def train(args):
                     labels=labels,
                 )
                 loss = outputs.loss
-                
-                # DeepSpeed 反向传播
                 model_engine.backward(loss)
                 model_engine.step()
             else:
@@ -210,23 +273,21 @@ def train(args):
                 )
                 loss = outputs.loss
                 
-                # 梯度累积
                 loss = loss / args.gradient_accumulation_steps
                 loss.backward()
                 
                 if (step + 1) % args.gradient_accumulation_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()
                     global_step += 1
             
-            # 日志
             if global_step % args.logging_steps == 0:
-                logger.info(f"Step {global_step} | Loss: {loss.item():.4f}")
-            
-            progress_bar.set_postfix({"loss": loss.item()})
+                logger.info(f"Step {global_step} | Loss: {loss.item():.4f} | "
+                            f"LR: {scheduler.get_last_lr()[0]:.2e}")
         
-        # 每个 epoch 保存一次
+        # 保存检查点
         if args.deepspeed:
             if model_engine.local_rank == 0:
                 save_path = os.path.join(args.output_dir, f"epoch_{epoch + 1}")
@@ -236,26 +297,32 @@ def train(args):
                 save_path = os.path.join(args.output_dir, f"epoch_{epoch + 1}")
                 model.save_pretrained(save_path)
                 tokenizer.save_pretrained(save_path)
+                config_path = os.path.join(save_path, "fusion_config.json")
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    json.dump(config.to_dict(), f, indent=2)
         
-        logger.info(f"✅ Epoch {epoch + 1} 完成，模型保存到 {args.output_dir}")
+        logger.info(f"[train] Epoch {epoch + 1} 完成，保存到 {args.output_dir}")
     
-    logger.info("✅ 训练完成！")
+    logger.info("[train] 全参数微调完成！")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Fusion 模型全参数微调")
     
     # 模型参数
-    parser.add_argument("--model_size", type=str, default="8B", choices=["8B", "14B"],
+    parser.add_argument("--model_size", type=str, default="1.5B",
+                        choices=["0.5B", "1.5B", "8B", "14B"],
                         help="模型大小")
+    parser.add_argument("--local_model", action="store_true", default=True,
+                        help="使用本地 FusionModel（默认）")
     parser.add_argument("--torch_dtype", type=str, default="bfloat16",
                         choices=["float32", "float16", "bfloat16"],
                         help="模型精度")
     
     # 训练参数
     parser.add_argument("--data_path", type=str, required=True,
-                        help="训练数据路径")
-    parser.add_argument("--output_dir", type=str, default="./output",
+                        help="训练数据路径（JSON 格式）")
+    parser.add_argument("--output_dir", type=str, default="./output/fusion-full",
                         help="输出目录")
     parser.add_argument("--num_epochs", type=int, default=3,
                         help="训练轮数")
@@ -269,6 +336,8 @@ def main():
                         help="权重衰减")
     parser.add_argument("--warmup_ratio", type=float, default=0.03,
                         help="预热步数比例")
+    parser.add_argument("--max_grad_norm", type=float, default=1.0,
+                        help="梯度裁剪")
     parser.add_argument("--max_length", type=int, default=2048,
                         help="最大序列长度")
     
@@ -289,14 +358,8 @@ def main():
     args = parser.parse_args()
     
     # 设置 torch dtype
-    if args.torch_dtype == "float32":
-        dtype = torch.float32
-    elif args.torch_dtype == "float16":
-        dtype = torch.float16
-    else:
-        dtype = torch.bfloat16
-    
-    args.torch_dtype = dtype
+    dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+    args.torch_dtype = dtype_map.get(args.torch_dtype, torch.bfloat16)
     
     train(args)
 

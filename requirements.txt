@@ -17,7 +17,7 @@ numpy>=1.24.0
 pandas>=2.0.0
 tqdm>=4.66.0
 
-#  tokenizer
+# Tokenizer
 sentencepiece>=0.1.99
 tokenizers>=0.15.0
 
@@ -25,7 +25,8 @@ tokenizers>=0.15.0
 langid>=1.1.6
 
 # 推理部署
-ollama>=0.1.0  # 需要单独安装 Ollama 客户端
+# 注意：Ollama 需要从 https://ollama.com/ 下载二进制客户端
+# 或使用 ollama-python SDK: pip install ollama
 
 # 评估（可选）
 evaluate>=0.4.0
@@ -37,8 +38,7 @@ wandb>=0.16.0
 
 # 工具
 pyyaml>=6.0.0
-jsmin>=3.0.0  # JSON 最小化
-click>=8.1.0  # CLI 工具
+click>=8.1.0
 
 # 测试
 pytest>=7.4.0

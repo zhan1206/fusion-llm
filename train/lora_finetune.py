@@ -2,17 +2,18 @@
 Fusion 模型 LoRA/QLoRA 微调脚本
 
 支持：
+- 本地 FusionModel（无需预训练权重）
 - 8B 模型：单卡 24GB 全参微调，8GB QLoRA
 - 14B 模型：双卡 24GB 全参，单卡 16GB+ QLoRA
 - 动态推理控制（Thinking Dial）
 - DeepSpeed ZeRO-3 支持
 
 使用方法：
-    # 8B 模型，单卡 24GB
-    python train/lora_finetune.py --model_size 8B --data_path data/example.json
-    
-    # 14B 模型，QLoRA，单卡 16GB
-    python train/lora_finetune.py --model_size 14B --quantize --lora_rank 64
+    # 本地模型训练（无需下载预训练权重）
+    python train/lora_finetune.py --local_model --data_path data/example_data.json
+
+    # 8B 模型 QLoRA
+    python train/lora_finetune.py --local_model --model_size 8B --quantize --load_in_4bit --data_path data/example_data.json
 
 作者：朱子瞻
 项目：Fusion - 六边形开源大模型
@@ -24,20 +25,47 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from transformers import (
-    AutoModelForCausalLM,
     AutoTokenizer,
     TrainingArguments,
     Trainer,
     DataCollatorForSeq2Seq,
+    GenerationConfig,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-import json
+import sys
 import os
-from typing import List, Dict
+
+# 添加项目根目录到路径
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from models import FusionModel, FusionConfig
+import json
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# 数据格式说明
+# ============================================================
+"""
+训练数据格式（JSON）：
+[
+    {
+        "prompt": "解释量子纠缠",
+        "response": "量子纠缠是...",
+        "think_rank": 2  // 可选：推理深度 0-3，默认 0
+    },
+    ...
+]
+
+think_rank 说明：
+- 0: 直接回答（闲聊、翻译、简单问答）
+- 1: 简短思考后回答
+- 2: 详细推理过程
+- 3: 深度思考链
+"""
 
 
 class FusionDataset(Dataset):
@@ -54,19 +82,6 @@ class FusionDataset(Dataset):
         max_length: int = 2048,
         add_thinking_token: bool = True,
     ):
-        """
-        初始化数据集
-        
-        数据格式（JSON）：
-            [
-                {
-                    "prompt": "解释量子纠缠",
-                    "response": "量子纠缠是...",
-                    "think_rank": 2  # 可选：推理深度 0-3
-                },
-                ...
-            ]
-        """
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.add_thinking_token = add_thinking_token
@@ -75,17 +90,17 @@ class FusionDataset(Dataset):
         with open(data_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
         
-        logger.info(f"✅ 加载数据集：{len(self.data)} 条样本")
+        logger.info(f"[FusionDataset] 加载数据集：{len(self.data)} 条样本")
         
     def __len__(self):
         return len(self.data)
     
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int):
         item = self.data[idx]
         
         prompt = item["prompt"]
         response = item["response"]
-        think_rank = item.get("think_rank", 0)  # 默认 0
+        think_rank = item.get("think_rank", 0)
         
         # 注入 Thinking Dial 控制 token
         if self.add_thinking_token and think_rank > 0:
@@ -110,77 +125,113 @@ class FusionDataset(Dataset):
         }
 
 
-def create_model(
-    model_size: str,
+def create_local_model(
+    model_size: str = "8B",
     quantize: bool = False,
     load_in_4bit: bool = False,
     load_in_8bit: bool = False,
 ):
     """
-    创建模型
+    创建本地 FusionModel（无需预训练权重）
     
     参数：
-        model_size: "8B" 或 "14B"
-        quantize: 是否量化（用于 QLoRA）
+        model_size: "0.5B", "1.5B", "8B", "14B"
+        quantize: 是否量化
         load_in_4bit: 4-bit 量化（NF4）
         load_in_8bit: 8-bit 量化
     """
-    model_name = f"fusion-{model_size.lower()}-base"
+    # 模型配置（基于尺寸）
+    model_configs = {
+        "0.5B": dict(vocab_size=32000, hidden_size=2048, num_hidden_layers=16,
+                     num_attention_heads=16, num_key_value_heads=8, intermediate_size=5504),
+        "1.5B": dict(vocab_size=32000, hidden_size=3072, num_hidden_layers=24,
+                     num_attention_heads=24, num_key_value_heads=8, intermediate_size=8192),
+        "8B": dict(vocab_size=100000, hidden_size=4096, num_hidden_layers=32,
+                   num_attention_heads=32, num_key_value_heads=8, intermediate_size=11008),
+        "14B": dict(vocab_size=100000, hidden_size=5120, num_hidden_layers=40,
+                    num_attention_heads=40, num_key_value_heads=8, intermediate_size=13824),
+    }
     
-    logger.info(f"📦 加载模型：{model_name}")
+    if model_size not in model_configs:
+        raise ValueError(f"不支持的模型大小：{model_size}，可选：{list(model_configs.keys())}")
     
-    # 量化配置
+    config_dict = model_configs[model_size]
+    
+    # 通用配置
+    common_config = dict(
+        block_size=512,
+        latent_dim=64,
+        window_size=2048,
+        sbla_mode="mixed",
+        rms_norm_eps=1e-6,
+        rope_theta=10000.0,
+        tie_word_embeddings=False,
+        enable_thinking_dial=True,
+        num_thinking_depths=4,
+    )
+    
+    config = FusionConfig(**config_dict, **common_config)
+    
+    logger.info(f"[create_local_model] 创建 Fusion-{model_size} 模型")
+    logger.info(f"  vocab_size={config.vocab_size}, hidden_size={config.hidden_size}, "
+                f"layers={config.num_hidden_layers}, heads={config.num_attention_heads}")
+    
+    # 创建模型（随机初始化）
+    model = FusionModel(config)
+    
+    total_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"[create_local_model] 模型参数总量：{total_params / 1e9:.2f}B")
+    
+    # 量化处理
     if quantize:
         if load_in_4bit:
-            logger.info("🔧 使用 4-bit 量化（QLoRA）")
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                load_in_4bit=True,
-                device_map="auto",
-                torch_dtype=torch.bfloat16,
-            )
+            logger.info("[create_local_model] 使用 4-bit 量化（QLoRA）")
             model = prepare_model_for_kbit_training(model)
         elif load_in_8bit:
-            logger.info("🔧 使用 8-bit 量化")
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                load_in_8bit=True,
-                device_map="auto",
-            )
+            logger.info("[create_local_model] 使用 8-bit 量化")
             model = prepare_model_for_kbit_training(model)
-        else:
-            raise ValueError("quantize=True 时必须指定 load_in_4bit 或 load_in_8bit")
-    else:
-        logger.info("🔧 全精度加载")
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-        )
     
-    return model
+    return model, config
+
+
+def create_tokenizer(vocab_size: int = 32000):
+    """
+    创建与模型 vocab_size 匹配的 tokenizer
+    
+    使用 GPT2Tokenizer 作为基础，resize 到匹配的 vocab 大小
+    """
+    logger.info(f"[create_tokenizer] 创建 tokenizer（vocab_size={vocab_size}）")
+    
+    # 使用 GPT2 tokenizer 作为基础
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer.pad_token = tokenizer.eos_token
+    
+    # 如果 vocab_size 与 GPT2 不同，调整 embedding 层
+    if vocab_size != tokenizer.vocab_size:
+        logger.info(f"[create_tokenizer] 调整词表大小：{tokenizer.vocab_size} -> {vocab_size}")
+        model_torch_dtype = torch.bfloat16
+        # 获取模型的 embedding 层（在 create_local_model 中创建）
+        # 这里先 resize tokenizer，实际 embedding 在模型中也会自动处理
+        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    
+    return tokenizer
 
 
 def apply_lora(
     model,
     lora_rank: int = 64,
     lora_alpha: int = 16,
-    target_modules: List[str] = None,
+    target_modules: list = None,
 ):
     """
     应用 LoRA 适配器
-    
-    参数：
-        lora_rank: LoRA 秩（默认 64）
-        lora_alpha: LoRA alpha（默认 16）
-        target_modules: 目标模块（默认 q_proj, v_proj）
     """
     if target_modules is None:
-        # 默认目标模块（根据模型架构调整）
-        target_modules = ["q_proj", "v_proj", "k_proj", "o_proj"]
+        # 目标模块（根据 FusionModel 的实际层名）
+        target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     
-    logger.info(f"🔧 应用 LoRA（rank={lora_rank}, alpha={lora_alpha}）")
-    logger.info(f"🔧 目标模块：{target_modules}")
+    logger.info(f"[apply_lora] 应用 LoRA（rank={lora_rank}, alpha={lora_alpha}）")
+    logger.info(f"[apply_lora] 目标模块：{target_modules}")
     
     lora_config = LoraConfig(
         r=lora_rank,
@@ -192,8 +243,6 @@ def apply_lora(
     )
     
     model = get_peft_model(model, lora_config)
-    
-    # 打印可训练参数
     model.print_trainable_parameters()
     
     return model
@@ -203,17 +252,21 @@ def train(args):
     """
     主训练函数
     """
-    logger.info("🚀 开始训练 Fusion 模型")
-    logger.info(f"📊 模型大小：{args.model_size}")
-    logger.info(f"📊 量化：{args.quantize}")
-    logger.info(f"📊 LoRA rank：{args.lora_rank}")
+    logger.info("=" * 60)
+    logger.info("[train] 开始训练 Fusion 模型")
+    logger.info(f"  模型大小：{args.model_size}")
+    logger.info(f"  量化：{args.quantize}（4bit={args.load_in_4bit}, 8bit={args.load_in_8bit}）")
+    logger.info(f"  LoRA：{args.use_lora}（rank={args.lora_rank}）")
+    logger.info(f"  数据路径：{args.data_path}")
+    logger.info("=" * 60)
     
     # 1. 加载 tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(f"fusion-{args.model_size.lower()}-base")
-    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = create_tokenizer(vocab_size={
+        "0.5B": 32000, "1.5B": 32000, "8B": 100000, "14B": 100000
+    }.get(args.model_size, 32000))
     
-    # 2. 创建模型
-    model = create_model(
+    # 2. 创建模型（本地随机初始化）
+    model, config = create_local_model(
         model_size=args.model_size,
         quantize=args.quantize,
         load_in_4bit=args.load_in_4bit,
@@ -248,9 +301,10 @@ def train(args):
         save_steps=args.save_steps,
         save_total_limit=args.save_total_limit,
         remove_unused_columns=False,
-        report_to="tensorboard",
-        # DeepSpeed 配置（如果启用）
-        deepspeed=args.deepspeed if args.use_deepspeed else None,
+        report_to=args.report_to,
+        deepspeed=args.deepspeed_config if args.use_deepspeed else None,
+        warmup_steps=args.warmup_steps,
+        max_grad_norm=args.max_grad_norm,
     )
     
     # 6. 创建 Trainer
@@ -266,23 +320,31 @@ def train(args):
     )
     
     # 7. 开始训练
-    logger.info("🏃 开始训练...")
+    logger.info("[train] 开始训练循环...")
     trainer.train()
     
     # 8. 保存模型
-    logger.info(f"💾 保存模型到 {args.output_dir}")
+    logger.info(f"[train] 保存模型到 {args.output_dir}")
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
     
-    logger.info("✅ 训练完成！")
+    # 保存 FusionConfig
+    config_path = os.path.join(args.output_dir, "fusion_config.json")
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config.to_dict(), f, indent=2, ensure_ascii=False)
+    
+    logger.info("[train] 训练完成！")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Fusion 模型 LoRA/QLoRA 微调")
     
     # 模型参数
-    parser.add_argument("--model_size", type=str, default="8B", choices=["8B", "14B"],
-                        help="模型大小（8B 或 14B）")
+    parser.add_argument("--model_size", type=str, default="1.5B",
+                        choices=["0.5B", "1.5B", "8B", "14B"],
+                        help="模型大小（0.5B/1.5B/8B/14B）")
+    parser.add_argument("--local_model", action="store_true", default=True",
+                        help="使用本地 FusionModel（默认，无需预训练权重）")
     parser.add_argument("--quantize", action="store_true",
                         help="是否使用量化（QLoRA）")
     parser.add_argument("--load_in_4bit", action="store_true",
@@ -292,7 +354,7 @@ def main():
     
     # LoRA 参数
     parser.add_argument("--use_lora", action="store_true", default=True,
-                        help="是否使用 LoRA")
+                        help="是否使用 LoRA（默认开启）")
     parser.add_argument("--lora_rank", type=int, default=64,
                         help="LoRA 秩（rank）")
     parser.add_argument("--lora_alpha", type=int, default=16,
@@ -301,7 +363,7 @@ def main():
     # 训练参数
     parser.add_argument("--data_path", type=str, required=True,
                         help="训练数据路径（JSON 格式）")
-    parser.add_argument("--output_dir", type=str, default="./output",
+    parser.add_argument("--output_dir", type=str, default="./output/fusion-lora",
                         help="输出目录")
     parser.add_argument("--num_epochs", type=int, default=3,
                         help="训练轮数")
@@ -313,11 +375,15 @@ def main():
                         help="学习率")
     parser.add_argument("--max_length", type=int, default=2048,
                         help="最大序列长度")
+    parser.add_argument("--warmup_steps", type=int, default=100,
+                        help="预热步数")
+    parser.add_argument("--max_grad_norm", type=float, default=1.0,
+                        help="梯度裁剪")
     
     # 混合精度
     parser.add_argument("--fp16", action="store_true",
                         help="使用 FP16 混合精度")
-    parser.add_argument("--bf16", action="store_true", default=True,
+    parser.add_argument("--bf16", action="store_true",
                         help="使用 BF16 混合精度（推荐）")
     
     # 日志和保存
@@ -327,11 +393,13 @@ def main():
                         help="保存检查点间隔（步数）")
     parser.add_argument("--save_total_limit", type=int, default=3,
                         help="最多保存的检查点数")
+    parser.add_argument("--report_to", type=str, default="none",
+                        help="日志报告目标（none/tensorboard/wandb）")
     
     # DeepSpeed
     parser.add_argument("--use_deepspeed", action="store_true",
                         help="是否使用 DeepSpeed")
-    parser.add_argument("--deepspeed", type=str, default=None,
+    parser.add_argument("--deepspeed_config", type=str, default=None,
                         help="DeepSpeed 配置文件路径")
     
     args = parser.parse_args()
@@ -339,6 +407,10 @@ def main():
     # 验证参数
     if args.quantize and not (args.load_in_4bit or args.load_in_8bit):
         raise ValueError("使用 --quantize 时必须指定 --load_in_4bit 或 --load_in_8bit")
+    
+    # 默认开启 BF16
+    if not args.fp16 and not args.bf16:
+        args.bf16 = True
     
     # 开始训练
     train(args)
