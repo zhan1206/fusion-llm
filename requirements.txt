@@ -1,0 +1,45 @@
+# Fusion 项目依赖
+
+# 核心依赖
+torch>=2.0.0
+transformers>=4.36.0
+accelerate>=0.25.0
+datasets>=2.16.0
+
+# PEFT (LoRA/QLoRA)
+peft>=0.7.0
+
+# 分布式训练
+deepspeed>=0.12.0
+
+# 数据处理
+numpy>=1.24.0
+pandas>=2.0.0
+tqdm>=4.66.0
+
+#  tokenizer
+sentencepiece>=0.1.99
+tokenizers>=0.15.0
+
+# 语言识别（数据清洗）
+langid>=1.1.6
+
+# 推理部署
+ollama>=0.1.0  # 需要单独安装 Ollama 客户端
+
+# 评估（可选）
+evaluate>=0.4.0
+rouge-score>=0.1.2
+
+# 可视化（可选）
+tensorboard>=2.15.0
+wandb>=0.16.0
+
+# 工具
+pyyaml>=6.0.0
+jsmin>=3.0.0  # JSON 最小化
+click>=8.1.0  # CLI 工具
+
+# 测试
+pytest>=7.4.0
+pytest-cov>=4.1.0

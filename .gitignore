@@ -1,0 +1,84 @@
+# Fusion 项目 .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyTorch
+*.pth
+*.pt
+checkpoints/
+runs/
+logs/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 数据和模型（大文件用 Git LFS）
+data/raw/
+data/processed/
+*.bin
+*.safetensors
+*.gguf
+*.pt
+*.pth
+
+# 输出目录
+output/
+results/
+wandb/
+tensorboard/
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# 测试覆盖率
+.coverage
+htmlcov/
+.pytest_cache/
+.coverage.*
+
+# 分布式训练
+/epoch_*
+/step_*
+
+# OS
+Thumbs.db
