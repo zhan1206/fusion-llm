@@ -8,6 +8,7 @@ datasets>=2.16.0
 
 # PEFT (LoRA/QLoRA)
 peft>=0.7.0
+bitsandbytes>=0.41.0
 
 # 分布式训练
 deepspeed>=0.12.0
@@ -25,8 +26,12 @@ tokenizers>=0.15.0
 langid>=1.1.6
 
 # 推理部署
-# 注意：Ollama 需要从 https://ollama.com/ 下载二进制客户端
-# 或使用 ollama-python SDK: pip install ollama
+ollama>=0.1.0
+# 注意：Ollama 也需要从 https://ollama.com/ 下载二进制客户端
+
+# 量化工具依赖
+scipy>=1.11.0
+scikit-learn>=1.3.0
 
 # 评估（可选）
 evaluate>=0.4.0

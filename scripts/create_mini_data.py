@@ -67,10 +67,20 @@ def create_mini_dataset(output_path: str, num_samples: int = 100):
         else:
             prompt, response = random.choice(english_samples)
         
+        # Assign think_rank based on content depth
+        if any(kw in prompt for kw in ["Prove", "Derive", "Analyze", "\u8bc1\u660e", "\u63a8\u5bfc", "\u5206\u6790"]):
+            think_rank = 3
+        elif any(kw in prompt for kw in ["Explain", "How", "Why", "\u89e3\u91ca", "\u5982\u4f55", "\u4e3a\u4ec0\u4e48"]):
+            think_rank = 2
+        elif any(kw in prompt for kw in ["Write", "Implement", "\u5199", "\u5b9e\u73b0"]):
+            think_rank = 1
+        else:
+            think_rank = 0
+
         data.append({
             "prompt": prompt,
             "response": response,
-            "think_rank": 0,  # mini 模型不使用 thinking dial
+            "think_rank": think_rank,
         })
     
     # 保存为 JSON

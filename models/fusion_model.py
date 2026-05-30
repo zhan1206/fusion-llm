@@ -118,9 +118,14 @@ class RMSNorm(nn.Module):
 
 class FusionAttention(nn.Module):
     """
-    Fusion 注意力层 - 集成 SBLA
+    Fusion Attention Layer with integrated SBLA.
     
-    在 FusionMiniLayer 中使用，实际集成到 fusion_model.py
+    NOTE (M4): This is a standalone reimplementation. The canonical SBLA logic
+    lives in sbla_attention.py (SBLAttention class). Future work should unify
+    by having FusionAttention delegate to SBLAttention instead of duplicating
+    mask building and block latent computation logic.
+    
+    See: models/sbla_attention.py::SBLAttention
     """
     
     def __init__(self, config: FusionConfig):
@@ -220,7 +225,9 @@ class FusionAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         batch_size, seq_len, _ = hidden_states.shape
         device = hidden_states.device
         
@@ -228,6 +235,14 @@ class FusionAttention(nn.Module):
         Q = self.q_proj(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         K = self.k_proj(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         V = self.v_proj(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        # KV Cache 逻辑
+        if past_key_value is not None:
+            past_k, past_v = past_key_value
+            K = torch.cat([past_k, K], dim=2)
+            V = torch.cat([past_v, V], dim=2)
+        
+        present_key_value = (K, V) if use_cache else None
         
         # 构建注意力掩码
         causal_mask = self._build_causal_mask(seq_len, device)
@@ -274,7 +289,7 @@ class FusionAttention(nn.Module):
         output = output_std + gate_value * latent_expanded
         
         output = self.LayerNorm(output)
-        return self.dropout(output)
+        return self.dropout(output), present_key_value
 
 
 class FusionLayer(nn.Module):
@@ -298,11 +313,18 @@ class FusionLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
         **kwargs,
-    ) -> Tuple[torch.Tensor, None]:
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        attn_output = self.attention(hidden_states, attention_mask)
+        attn_output, present_key_value = self.attention(
+            hidden_states, 
+            attention_mask,
+            past_key_value=past_key_value if past_key_value is not None else None,
+            use_cache=use_cache,
+        )
         hidden_states = residual + self.dropout(attn_output)
         
         residual = hidden_states
@@ -312,7 +334,7 @@ class FusionLayer(nn.Module):
         ffn_output = self.down_proj(gate * up)
         hidden_states = residual + self.dropout(ffn_output)
         
-        return hidden_states, None
+        return hidden_states, present_key_value
 
 
 class FusionModel(PreTrainedModel, GenerationMixin):
@@ -381,9 +403,23 @@ class FusionModel(PreTrainedModel, GenerationMixin):
             float_mask = attention_mask.to(dtype=hidden_states.dtype)
             attention_mask = (1.0 - float_mask) * torch.finfo(hidden_states.dtype).min
         
-        # Transformer 层
-        for layer in self.layers:
-            hidden_states, _ = layer(hidden_states, attention_mask=attention_mask)
+        # Transformer 层（支持 KV Cache）
+        past_key_values = kwargs.get("past_key_values", None)
+        use_cache = kwargs.get("use_cache", False) or (past_key_values is not None)
+        
+        present_key_values = () if use_cache else None
+        
+        for i, layer in enumerate(self.layers):
+            layer_past = past_key_values[i] if past_key_values is not None else None
+            layer_outputs, cache = layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                past_key_value=layer_past,
+                use_cache=use_cache,
+            )
+            hidden_states = layer_outputs
+            if use_cache:
+                present_key_values = present_key_values + (cache,)
         
         # Final norm
         hidden_states = self.norm(hidden_states)
@@ -398,6 +434,9 @@ class FusionModel(PreTrainedModel, GenerationMixin):
             shift_labels = labels[..., 1:].contiguous()
             loss_fct = nn.CrossEntropyLoss()
             loss = loss_fct(shift_logits.view(-1, self.config.vocab_size), shift_labels.view(-1))
+        
+        if use_cache:
+            return {"loss": loss, "logits": logits, "past_key_values": present_key_values}
         
         if not return_dict:
             return (loss, logits) if loss is not None else (logits,)
@@ -438,8 +477,7 @@ class FusionModel(PreTrainedModel, GenerationMixin):
             )
             
             logits = outputs["logits"]
-            if "past_key_values" in outputs:
-                past_key_values = outputs["past_key_values"]
+            past_key_values = outputs.get("past_key_values", None)
             
             next_token_logits = logits[:, -1, :] / max(temperature, 1e-8)
             

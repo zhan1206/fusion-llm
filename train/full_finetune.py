@@ -25,9 +25,9 @@ import torch
 import torch.nn as nn
 import deepspeed
 from transformers import (
-    AutoTokenizer,
     get_linear_schedule_with_warmup,
 )
+from models.tokenizer import get_tokenizer, get_effective_vocab_size
 from torch.utils.data import Dataset, DataLoader
 import json
 import os
@@ -158,14 +158,16 @@ def create_local_model(
     return model, config
 
 
-def create_tokenizer(vocab_size: int = 32000):
+def create_tokenizer(tokenizer_type: str = "gpt2", vocab_size: int = 32000):
     """
-    创建 tokenizer
+    Create tokenizer using the unified tokenizer module.
+    
+    Note: Currently uses GPT2 as placeholder until SentencePiece model is trained.
+    The model config vocab_size will be auto-adjusted to match.
     """
-    logger.info(f"[create_tokenizer] 创建 tokenizer（vocab_size={vocab_size}）")
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    effective_vocab = get_effective_vocab_size(tokenizer_type, vocab_size)
+    logger.info(f"[create_tokenizer] Creating tokenizer: type={tokenizer_type}, effective_vocab={effective_vocab}")
+    tokenizer = get_tokenizer(tokenizer_type, vocab_size=vocab_size)
     return tokenizer
 
 
