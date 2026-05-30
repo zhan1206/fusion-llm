@@ -1,0 +1,502 @@
+[
+  {
+    "prompt": "什么是大数据",
+    "response": "大数据是指规模巨大、类型多样的数据集合。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How to learn coding",
+    "response": "Practice coding regularly and build projects.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is AI",
+    "response": "AI stands for Artificial Intelligence.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python features",
+    "response": "Python is simple, powerful, and versatile.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python features",
+    "response": "Python is simple, powerful, and versatile.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python features",
+    "response": "Python is simple, powerful, and versatile.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是大数据",
+    "response": "大数据是指规模巨大、类型多样的数据集合。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Hello",
+    "response": "Hello! I am Fusion Mini model.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How to learn coding",
+    "response": "Practice coding regularly and build projects.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "云计算的优势",
+    "response": "云计算提供弹性扩展、成本节约、易于维护等优势。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是人工智能",
+    "response": "人工智能是计算机科学的一个分支，致力于创建智能机器。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How to learn coding",
+    "response": "Practice coding regularly and build projects.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python 有什么特点",
+    "response": "Python 是一种简单易学、功能强大的编程语言。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How blockchain works",
+    "response": "Blockchain is a distributed ledger technology.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is AI",
+    "response": "AI stands for Artificial Intelligence.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How blockchain works",
+    "response": "Blockchain is a distributed ledger technology.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is big data",
+    "response": "Big data refers to extremely large datasets.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How blockchain works",
+    "response": "Blockchain is a distributed ledger technology.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "如何学习编程",
+    "response": "学习编程需要理论与实践相结合，多写代码多思考。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is NLP",
+    "response": "NLP helps computers understand human language.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是自然语言处理",
+    "response": "自然语言处理是AI的一个分支，帮助计算机理解人类语言。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是自然语言处理",
+    "response": "自然语言处理是AI的一个分支，帮助计算机理解人类语言。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is NLP",
+    "response": "NLP helps computers understand human language.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是自然语言处理",
+    "response": "自然语言处理是AI的一个分支，帮助计算机理解人类语言。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Benefits of cloud computing",
+    "response": "Cloud computing offers scalability and cost savings.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is NLP",
+    "response": "NLP helps computers understand human language.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "深度学习是什么",
+    "response": "深度学习是机器学习的一个分支，使用多层神经网络模拟人脑。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python 有什么特点",
+    "response": "Python 是一种简单易学、功能强大的编程语言。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How blockchain works",
+    "response": "Blockchain is a distributed ledger technology.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "如何学习编程",
+    "response": "学习编程需要理论与实践相结合，多写代码多思考。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "区块链的原理",
+    "response": "区块链是一种分布式账本技术，确保数据不可篡改。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "区块链的原理",
+    "response": "区块链是一种分布式账本技术，确保数据不可篡改。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "你好",
+    "response": "你好！我是 Fusion Mini 模型。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is AI",
+    "response": "AI stands for Artificial Intelligence.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Hello",
+    "response": "Hello! I am Fusion Mini model.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "你好",
+    "response": "你好！我是 Fusion Mini 模型。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is big data",
+    "response": "Big data refers to extremely large datasets.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is big data",
+    "response": "Big data refers to extremely large datasets.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Explain machine learning",
+    "response": "Machine learning is a subset of AI.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is NLP",
+    "response": "NLP helps computers understand human language.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is deep learning",
+    "response": "Deep learning uses neural networks with many layers.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Hello",
+    "response": "Hello! I am Fusion Mini model.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是大数据",
+    "response": "大数据是指规模巨大、类型多样的数据集合。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是自然语言处理",
+    "response": "自然语言处理是AI的一个分支，帮助计算机理解人类语言。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "如何学习编程",
+    "response": "学习编程需要理论与实践相结合，多写代码多思考。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is AI",
+    "response": "AI stands for Artificial Intelligence.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是自然语言处理",
+    "response": "自然语言处理是AI的一个分支，帮助计算机理解人类语言。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python features",
+    "response": "Python is simple, powerful, and versatile.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is big data",
+    "response": "Big data refers to extremely large datasets.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is big data",
+    "response": "Big data refers to extremely large datasets.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How to learn coding",
+    "response": "Practice coding regularly and build projects.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is big data",
+    "response": "Big data refers to extremely large datasets.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "深度学习是什么",
+    "response": "深度学习是机器学习的一个分支，使用多层神经网络模拟人脑。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "区块链的原理",
+    "response": "区块链是一种分布式账本技术，确保数据不可篡改。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Benefits of cloud computing",
+    "response": "Cloud computing offers scalability and cost savings.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python 有什么特点",
+    "response": "Python 是一种简单易学、功能强大的编程语言。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "深度学习是什么",
+    "response": "深度学习是机器学习的一个分支，使用多层神经网络模拟人脑。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python features",
+    "response": "Python is simple, powerful, and versatile.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "区块链的原理",
+    "response": "区块链是一种分布式账本技术，确保数据不可篡改。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "云计算的优势",
+    "response": "云计算提供弹性扩展、成本节约、易于维护等优势。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "如何学习编程",
+    "response": "学习编程需要理论与实践相结合，多写代码多思考。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is deep learning",
+    "response": "Deep learning uses neural networks with many layers.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is big data",
+    "response": "Big data refers to extremely large datasets.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "你好",
+    "response": "你好！我是 Fusion Mini 模型。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python features",
+    "response": "Python is simple, powerful, and versatile.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是人工智能",
+    "response": "人工智能是计算机科学的一个分支，致力于创建智能机器。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "你好",
+    "response": "你好！我是 Fusion Mini 模型。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "区块链的原理",
+    "response": "区块链是一种分布式账本技术，确保数据不可篡改。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是自然语言处理",
+    "response": "自然语言处理是AI的一个分支，帮助计算机理解人类语言。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How blockchain works",
+    "response": "Blockchain is a distributed ledger technology.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python features",
+    "response": "Python is simple, powerful, and versatile.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Explain machine learning",
+    "response": "Machine learning is a subset of AI.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is deep learning",
+    "response": "Deep learning uses neural networks with many layers.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "区块链的原理",
+    "response": "区块链是一种分布式账本技术，确保数据不可篡改。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is big data",
+    "response": "Big data refers to extremely large datasets.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How to learn coding",
+    "response": "Practice coding regularly and build projects.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How blockchain works",
+    "response": "Blockchain is a distributed ledger technology.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is deep learning",
+    "response": "Deep learning uses neural networks with many layers.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "你好",
+    "response": "你好！我是 Fusion Mini 模型。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "你好",
+    "response": "你好！我是 Fusion Mini 模型。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python features",
+    "response": "Python is simple, powerful, and versatile.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "云计算的优势",
+    "response": "云计算提供弹性扩展、成本节约、易于维护等优势。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是大数据",
+    "response": "大数据是指规模巨大、类型多样的数据集合。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python 有什么特点",
+    "response": "Python 是一种简单易学、功能强大的编程语言。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Benefits of cloud computing",
+    "response": "Cloud computing offers scalability and cost savings.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Hello",
+    "response": "Hello! I am Fusion Mini model.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is big data",
+    "response": "Big data refers to extremely large datasets.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is NLP",
+    "response": "NLP helps computers understand human language.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python features",
+    "response": "Python is simple, powerful, and versatile.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "区块链的原理",
+    "response": "区块链是一种分布式账本技术，确保数据不可篡改。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "解释机器学习",
+    "response": "机器学习是人工智能的子领域，使计算机能够从数据中学习。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "深度学习是什么",
+    "response": "深度学习是机器学习的一个分支，使用多层神经网络模拟人脑。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Python features",
+    "response": "Python is simple, powerful, and versatile.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "你好",
+    "response": "你好！我是 Fusion Mini 模型。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "Explain machine learning",
+    "response": "Machine learning is a subset of AI.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是自然语言处理",
+    "response": "自然语言处理是AI的一个分支，帮助计算机理解人类语言。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "你好",
+    "response": "你好！我是 Fusion Mini 模型。",
+    "think_rank": 0
+  },
+  {
+    "prompt": "How to learn coding",
+    "response": "Practice coding regularly and build projects.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "What is big data",
+    "response": "Big data refers to extremely large datasets.",
+    "think_rank": 0
+  },
+  {
+    "prompt": "什么是人工智能",
+    "response": "人工智能是计算机科学的一个分支，致力于创建智能机器。",
+    "think_rank": 0
+  }
+]

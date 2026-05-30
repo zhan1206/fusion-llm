@@ -1,25 +1,34 @@
 """
-Fusion 完整模型定义
+Fusion Mini - 可运行的最小化模型
 
-集成：
-1. SBLA 注意力（滑动分块潜注意力）
-2. Thinking Dial（动态推理强度控制）
-3. 标准 Transformer 架构
+这是一个简化但**完整可运行**的 Fusion 模型实现，用于验证整个流程。
+
+包含：
+1. 标准 Transformer 架构（暂时不用 SBLA）
+2. 基础 Thinking Dial 控制（通过 token 注入）
+3. 完整的训练、推理接口
 
 使用方法：
-    from models.fusion_model import FusionModel, FusionConfig
+    from models.fusion_mini import FusionMini, FusionMiniConfig
     
-    config = FusionConfig.from_pretrained("fusion-8b")
-    model = FusionModel(config)
-    
-    # 或从头训练
-    config = FusionConfig(
-        vocab_size=100000,
-        hidden_size=4096,
-        num_hidden_layers=32,
-        num_attention_heads=32,
+    # 创建 mini 模型
+    config = FusionMiniConfig(
+        vocab_size=10000,      # 小词表
+        hidden_size=128,        # 小隐层
+        num_hidden_layers=4,    # 少层数
+        num_attention_heads=4,  # 少注意力头
     )
-    model = FusionModel(config)
+    
+    model = FusionMini(config)
+    
+    # 测试前向传播
+    input_ids = torch.randint(0, 10000, (2, 64))
+    outputs = model.forward(input_ids=input_ids, labels=input_ids)
+    print(f"Loss: {outputs['loss'].item()}")
+    
+    # 推理
+    generated = model.generate(input_ids[:, :10], max_new_tokens=20)
+    print(f"Generated shape: {generated.shape}")
 
 作者：朱子瞻
 项目：Fusion - 六边形开源大模型
@@ -28,47 +37,40 @@ Fusion 完整模型定义
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import PretrainedConfig, PreTrainedModel
-
-# 暂时注释掉（尚未实现）
-# from .sbla_attention import SlidingBlockLatentAttention, FusionAttentionBlock
-# from .thinking_dial import ThinkingDialProcessor, ThinkingConfig
-
+from typing import Optional, Tuple
 import math
-from typing import Optional, Tuple, List
 import json
-import os
+from pathlib import Path
+
+# 导入 SBLA 注意力
+from .sbla_attention import SBLAttention
 
 
-class FusionConfig(PretrainedConfig):
+class FusionMiniConfig(PretrainedConfig):
     """
-    Fusion 模型配置
+    Fusion Mini 配置
     
-    继承自 HuggingFace PretrainedConfig，支持 from_pretrained()
+    极简配置，用于快速验证流程
     """
     
-    model_type = "fusion"
+    model_type = "fusion_mini"
     
     def __init__(
         self,
-        vocab_size: int = 100000,
-        hidden_size: int = 4096,
-        num_hidden_layers: int = 32,
-        num_attention_heads: int = 32,
-        intermediate_size: int = 11008,
-        hidden_act: str = "silu",
-        hidden_dropout_prob: float = 0.1,
-        attention_probs_dropout_prob: float = 0.1,
-        max_position_embeddings: int = 32768,
+        vocab_size: int = 10000,
+        hidden_size: int = 128,
+        num_hidden_layers: int = 4,
+        num_attention_heads: int = 4,
+        intermediate_size: int = 512,
+        hidden_act: str = "gelu",
+        max_position_embeddings: int = 512,
         initializer_range: float = 0.02,
         use_cache: bool = True,
-        # SBLA 参数
-        block_size: int = 512,
-        latent_dim: int = 64,
-        window_size: int = 2048,
         # Thinking Dial 参数
         enable_thinking_dial: bool = True,
-        num_thinking_depths: int = 4,  # 0-3
+        num_thinking_depths: int = 4,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -79,18 +81,11 @@ class FusionConfig(PretrainedConfig):
         self.num_attention_heads = num_attention_heads
         self.intermediate_size = intermediate_size
         self.hidden_act = hidden_act
-        self.hidden_dropout_prob = hidden_dropout_prob
-        self.attention_probs_dropout_prob = attention_probs_dropout_prob
         self.max_position_embeddings = max_position_embeddings
         self.initializer_range = initializer_range
         self.use_cache = use_cache
         
-        # SBLA 参数
-        self.block_size = block_size
-        self.latent_dim = latent_dim
-        self.window_size = window_size
-        
-        # Thinking Dial 参数
+        # Thinking Dial
         self.enable_thinking_dial = enable_thinking_dial
         self.num_thinking_depths = num_thinking_depths
         
@@ -99,9 +94,9 @@ class FusionConfig(PretrainedConfig):
         """
         从配置文件加载
         """
-        config_file = os.path.join(config_path, "config.json")
+        config_file = Path(config_path) / "config.json"
         
-        if os.path.exists(config_file):
+        if config_file.exists():
             with open(config_file, 'r') as f:
                 config_dict = json.load(f)
             
@@ -110,12 +105,12 @@ class FusionConfig(PretrainedConfig):
         raise FileNotFoundError(f"配置文件未找到：{config_file}")
 
 
-class FusionEmbeddings(nn.Module):
+class FusionMiniEmbeddings(nn.Module):
     """
-    Fusion 词嵌入 + 位置编码
+    Fusion Mini 词嵌入
     """
     
-    def __init__(self, config: FusionConfig):
+    def __init__(self, config: FusionMiniConfig):
         super().__init__()
         
         self.word_embeddings = nn.Embedding(
@@ -134,7 +129,7 @@ class FusionEmbeddings(nn.Module):
             eps=1e-12,
         )
         
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.dropout = nn.Dropout(0.1)
         
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
@@ -162,25 +157,24 @@ class FusionEmbeddings(nn.Module):
         return embeddings
 
 
-class FusionLayer(nn.Module):
+class FusionMiniAttention(nn.Module):
     """
-    Fusion Transformer 层
-    
-    集成 SBLA 注意力 + Thinking Dial（在 embedding 层处理）
+    Fusion Mini 注意力层（标准多头注意力）
     """
     
-    def __init__(self, config: FusionConfig):
+    def __init__(self, config: FusionMiniConfig):
         super().__init__()
         
-        # SBLA 注意力块
-        self.attention = FusionAttentionBlock(
-            d_model=config.hidden_size,
-            n_heads=config.num_attention_heads,
-            dim_feedforward=config.intermediate_size,
-            dropout=config.attention_probs_dropout_prob,
-            block_size=config.block_size,
-            latent_dim=config.latent_dim,
-        )
+        self.num_attention_heads = config.num_attention_heads
+        self.attention_head_size = config.hidden_size // config.num_attention_heads
+        self.all_head_size = config.hidden_size
+        
+        self.query = nn.Linear(config.hidden_size, self.all_head_size)
+        self.key = nn.Linear(config.hidden_size, self.all_head_size)
+        self.value = nn.Linear(config.hidden_size, self.all_head_size)
+        
+        self.out = nn.Linear(config.hidden_size, config.hidden_size)
+        self.dropout = nn.Dropout(0.1)
         
     def forward(
         self,
@@ -192,37 +186,111 @@ class FusionLayer(nn.Module):
             hidden_states: (batch, seq_len, hidden_size)
             attention_mask: (batch, 1, 1, seq_len)
         """
-        # SBLA 注意力 + FFN（在 FusionAttentionBlock 内实现）
-        hidden_states = self.attention(hidden_states, attention_mask)
+        batch_size, seq_len, _ = hidden_states.shape
+        
+        # 线性投影
+        q = self.query(hidden_states)
+        k = self.key(hidden_states)
+        v = self.value(hidden_states)
+        
+        # 重塑为多头
+        q = q.view(batch_size, seq_len, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
+        
+        # 计算注意力分数
+        attention_scores = torch.matmul(q, k.transpose(-1, -2))
+        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+        
+        # 应用注意力掩码
+        if attention_mask is not None:
+            attention_scores = attention_scores + attention_mask
+        
+        # Softmax
+        attention_probs = F.softmax(attention_scores, dim=-1)
+        attention_probs = self.dropout(attention_probs)
+        
+        # 加权求和
+        context = torch.matmul(attention_probs, v)
+        
+        # 重塑回原始形状
+        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.all_head_size)
+        
+        # 输出线性层
+        output = self.out(context)
+        
+        return output
+
+
+class FusionMiniLayer(nn.Module):
+    """
+    Fusion Mini Transformer 层（使用SBLA注意力）
+    """
+    
+    def __init__(self, config: FusionMiniConfig):
+        super().__init__()
+        
+        # 使用 SBLA 注意力（替换标准注意力）
+        self.sbla_attention = SBLAttention(
+            hidden_size=config.hidden_size,
+            num_heads=config.num_attention_heads,
+            block_size=64,  # 小模型用较小分块
+            latent_dim=config.hidden_size // 8,
+            dropout=0.1,
+        )
+        
+        self.intermediate = nn.Linear(config.hidden_size, config.intermediate_size)
+        self.output = nn.Linear(config.intermediate_size, config.hidden_size)
+        
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.dropout = nn.Dropout(0.1)
+        
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        参数：
+            hidden_states: (batch, seq_len, hidden_size)
+            attention_mask: (batch, 1, 1, seq_len)
+        """
+        # SBLA 注意力 + 残差连接
+        attention_output = self.sbla_attention(hidden_states, attention_mask)
+        hidden_states = self.LayerNorm(hidden_states + attention_output)
+        
+        # FFN
+        intermediate_output = self.intermediate(hidden_states)
+        intermediate_output = F.gelu(intermediate_output)
+        ffn_output = self.output(intermediate_output)
+        ffn_output = self.dropout(ffn_output)
+        
+        # 残差连接 + LayerNorm
+        hidden_states = self.LayerNorm(hidden_states + ffn_output)
         
         return hidden_states
 
 
-class FusionModel(PreTrainedModel):
+class FusionMini(PreTrainedModel):
     """
-    Fusion 完整模型
+    Fusion Mini 完整模型
     
-    架构：
-    1. Embeddings（词嵌入 + 位置编码）
-    2. Transformer 层（SBLA 注意力）
-    3. LM Head（语言模型头）
-    
-    支持 Thinking Dial（通过特殊 token 在输入中控制）
+    极简实现，用于验证完整流程
     """
     
-    config_class = FusionConfig
+    config_class = FusionMiniConfig
     
-    def __init__(self, config: FusionConfig):
+    def __init__(self, config: FusionMiniConfig):
         super().__init__(config)
         
         self.config = config
         
         # 1. Embeddings
-        self.embeddings = FusionEmbeddings(config)
+        self.embeddings = FusionMiniEmbeddings(config)
         
         # 2. Transformer 层
         self.layers = nn.ModuleList([
-            FusionLayer(config)
+            FusionMiniLayer(config)
             for _ in range(config.num_hidden_layers)
         ])
         
@@ -238,10 +306,6 @@ class FusionModel(PreTrainedModel):
         
         # 初始化权重
         self.init_weights()
-        
-        # Thinking Dial 处理器（如果有）
-        if config.enable_thinking_dial:
-            self.thinking_processor = ThinkingDialProcessor(self)
         
     def init_weights(self):
         """
@@ -293,7 +357,6 @@ class FusionModel(PreTrainedModel):
         if attention_mask is not None:
             # 转换为 (batch, 1, 1, seq_len) 格式
             attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-            attention_mask = attention_mask.to(dtype=hidden_states.dtype)
             attention_mask = (1.0 - attention_mask) * -10000.0
         
         # 3. Transformer 层
@@ -332,16 +395,14 @@ class FusionModel(PreTrainedModel):
     def generate(
         self,
         input_ids: torch.Tensor,
-        max_new_tokens: int = 256,
+        max_new_tokens: int = 50,
         temperature: float = 1.0,
         top_p: float = 0.95,
         do_sample: bool = True,
-        pad_token_id: Optional[int] = None,
-        eos_token_id: Optional[int] = None,
         **kwargs,
     ):
         """
-        生成文本（简化版本，实际应使用 HuggingFace GenerationMixin）
+        生成文本（简化版本）
         
         参数：
             input_ids: (batch, seq_len)
@@ -350,9 +411,6 @@ class FusionModel(PreTrainedModel):
             top_p: nucleus sampling
             do_sample: 是否采样
         """
-        # 简化实现：实际应使用 HuggingFace 的 generate()
-        # 这里只提供框架
-        
         batch_size = input_ids.shape[0]
         generated = input_ids.clone()
         
@@ -377,7 +435,7 @@ class FusionModel(PreTrainedModel):
                     next_token_logits, descending=True
                 )
                 cumulative_probs = torch.cumsum(
-                    torch.softmax(sorted_logits, dim=-1), dim=-1
+                    F.softmax(sorted_logits, dim=-1), dim=-1
                 )
                 
                 # 移除累积概率超过 top_p 的 token
@@ -395,7 +453,7 @@ class FusionModel(PreTrainedModel):
             
             # 采样或贪婪解码
             if do_sample:
-                probs = torch.softmax(next_token_logits, dim=-1)
+                probs = F.softmax(next_token_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
             else:
                 next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
@@ -404,8 +462,9 @@ class FusionModel(PreTrainedModel):
             generated = torch.cat([generated, next_token], dim=1)
             
             # 检查是否生成 EOS
-            if eos_token_id is not None and (next_token == eos_token_id).all():
-                break
+            if kwargs.get("eos_token_id") is not None:
+                if (next_token == kwargs["eos_token_id"]).all():
+                    break
             
             # 更新 input_ids（简化：实际应使用 KV 缓存）
             input_ids = generated
@@ -415,32 +474,31 @@ class FusionModel(PreTrainedModel):
 
 if __name__ == "__main__":
     # 单元测试
-    print("🧪 测试 Fusion 完整模型...")
+    print("🧪 测试 Fusion Mini 模型...")
     
     # 创建配置
-    config = FusionConfig(
-        vocab_size=100000,
-        hidden_size=512,  # 小型测试
+    config = FusionMiniConfig(
+        vocab_size=10000,
+        hidden_size=128,
         num_hidden_layers=4,
-        num_attention_heads=8,
-        block_size=128,  # 小 block 用于测试
-        latent_dim=32,
+        num_attention_heads=4,
+        intermediate_size=512,
     )
     
     print(f"✅ 配置创建成功")
+    print(f"   词表大小：{config.vocab_size}")
     print(f"   隐层大小：{config.hidden_size}")
     print(f"   层数：{config.num_hidden_layers}")
-    print(f"   SBLA block_size：{config.block_size}")
     
     # 创建模型
-    model = FusionModel(config)
+    model = FusionMini(config)
     
     print(f"\n✅ 模型创建成功")
-    print(f"   参数量：{sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+    print(f"   参数量：{sum(p.numel() for p in model.parameters()) / 1e3:.1f}K")
     
     # 测试前向传播
     batch_size = 2
-    seq_len = 256
+    seq_len = 64
     
     input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
     attention_mask = torch.ones(batch_size, seq_len)
@@ -456,4 +514,17 @@ if __name__ == "__main__":
     print(f"   Loss: {outputs['loss'].item():.4f}")
     print(f"   Logits 形状: {outputs['logits'].shape}")
     
-    print("\n🎉 Fusion 模型测试完成！")
+    # 测试生成
+    generated = model.generate(
+        input_ids=input_ids[:, :10],  # 只用前 10 个 token
+        max_new_tokens=20,
+    )
+    
+    print(f"\n✅ 生成测试通过")
+    print(f"   生成形状: {generated.shape}")
+    
+    print("\n🎉 Fusion Mini 测试完成！")
+    print("\n💡 下一步：")
+    print("   1. 使用真实数据训练这个 mini 模型")
+    print("   2. 验证训练流程")
+    print("   3. 然后实现 SBLA 和 Thinking Dial")
