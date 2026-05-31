@@ -600,7 +600,163 @@ def quantize_fusion_model(
 
 
 # ============================================================
-# 主程序入口（示例）
+# QAT (Quantization-Aware Training) Integration
+# ============================================================
+
+class QATTrainer:
+    """
+    Quantization-Aware Training trainer for Fusion models.
+    
+    Inserts fake-quantization nodes into the model during training,
+    so the model learns to be robust to quantization noise.
+    After training, the model can be quantized with minimal accuracy loss.
+    
+    Usage:
+        from inference.dyquant import QATTrainer, QuantConfig
+        
+        config = QuantConfig(model_path="fusion-8b-base", bits=4)
+        trainer = QATTrainer(config, train_data="data/train.json")
+        trainer.train(epochs=3, lr=1e-5)
+        trainer.save("fusion-8b-qat")
+    """
+    
+    def __init__(
+        self,
+        config: QuantConfig,
+        train_data: Optional[str] = None,
+        learning_rate: float = 1e-5,
+        warmup_steps: int = 100,
+    ):
+        self.config = config
+        self.train_data = train_data
+        self.lr = learning_rate
+        self.warmup_steps = warmup_steps
+        self.converter = DyQuantConverter(config)
+        self.model = None
+        self.qat_model = None
+    
+    def prepare(self) -> nn.Module:
+        """Load model and insert fake-quantization nodes."""
+        self.model = self.converter.load_model()
+        self.qat_model = self._insert_fake_quant(self.model)
+        return self.qat_model
+    
+    def _insert_fake_quant(self, model: nn.Module) -> nn.Module:
+        """Insert fake-quantization observers into all Linear layers."""
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Linear) and any(
+                kw in name for kw in ['q_proj', 'k_proj', 'v_proj', 'out_proj', 'gate_proj', 'up_proj', 'down_proj']
+            ):
+                # Use PyTorch native fake quantization
+                module = torch.ao.quantization.fuse_modules(model, [name], inplace=False)
+                torch.ao.quantization.prepare_qat(module, inplace=True)
+        return model
+    
+    def train(
+        self,
+        epochs: int = 3,
+        lr: Optional[float] = None,
+        batch_size: int = 4,
+        max_seq_len: int = 2048,
+    ):
+        """
+        Run QAT fine-tuning.
+        
+        Args:
+            epochs: Number of training epochs
+            lr: Learning rate (defaults to self.lr)
+            batch_size: Training batch size
+            max_seq_len: Maximum sequence length
+        """
+        if self.qat_model is None:
+            self.prepare()
+        
+        actual_lr = lr or self.lr
+        device = next(self.qat_model.parameters()).device
+        optimizer = torch.optim.AdamW(self.qat_model.parameters(), lr=actual_lr)
+        scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.1, total_iters=self.warmup_steps
+        )
+        
+        print(f"[QAT] Starting QAT training: epochs={epochs}, lr={actual_lr}")
+        
+        # Load training data if provided
+        if self.train_data and Path(self.train_data).exists():
+            train_dataset = self._load_dataset(self.train_data, max_seq_len)
+        else:
+            print("[QAT] Warning: No training data provided, using random calibration")
+            train_dataset = self._generate_calib_data(batch_size * 10, max_seq_len)
+        
+        dataloader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True
+        )
+        
+        self.qat_model.train()
+        step = 0
+        for epoch in range(epochs):
+            total_loss = 0.0
+            for batch in dataloader:
+                input_ids = batch.to(device)
+                attention_mask = torch.ones_like(input_ids)
+                labels = input_ids.clone()
+                
+                outputs = self.qat_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                )
+                loss = outputs.loss if hasattr(outputs, 'loss') else outputs['loss']
+                
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                
+                total_loss += loss.item()
+                step += 1
+            
+            avg_loss = total_loss / len(dataloader)
+            print(f"[QAT] Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f}")
+        
+        print(f"[QAT] Training complete ({step} steps)")
+    
+    def _load_dataset(self, data_path: str, max_seq_len: int):
+        """Load JSON training data."""
+        import json
+        with open(data_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        texts = [item.get('text', item.get('prompt', '')) + ' ' + item.get('response', '') for item in data]
+        # Simple tokenization: character-level for now
+        encoded = [list(t.encode('utf-8'))[:max_seq_len] for t in texts]
+        padded = [
+            seq + [0] * (max_seq_len - len(seq)) if len(seq) < max_seq_len else seq
+            for seq in encoded
+        ]
+        return torch.utils.data.TensorDataset(torch.tensor(padded, dtype=torch.long))
+    
+    def _generate_calib_data(self, num_samples: int, seq_len: int):
+        """Generate random calibration data."""
+        data = torch.randint(0, 1000, (num_samples, seq_len))
+        return torch.utils.data.TensorDataset(data)
+    
+    def save(self, output_path: str):
+        """Convert QAT model to final quantized model and save."""
+        # Remove fake-quant nodes and convert to actual quantized model
+        final_model = torch.ao.quantization.convert(self.qat_model, inplace=False)
+        output_dir = Path(output_path)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(final_model.state_dict(), output_dir / "qat_model.pt")
+        
+        # Also save as regular quantized model
+        self.config.output_path = output_path
+        quantized = self.converter.convert()
+        self.converter.save(output_path)
+        print(f"[QAT] Saved to {output_path}")
+
+
+# ============================================================
+# Main Entry Point
 # ============================================================
 
 if __name__ == "__main__":

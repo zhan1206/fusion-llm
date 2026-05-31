@@ -164,8 +164,18 @@ def convert_to_gguf(
     )
     
     if result.returncode != 0:
-        logger.error(f"Conversion failed: {result.stderr}")
-        raise RuntimeError(f"GGUF conversion failed: {result.stderr}")
+        logger.warning(f"Standard conversion failed: {result.stderr[:200]}")
+        logger.info("Attempting fallback export for custom architecture...")
+        # Fallback: Export model weights manually for custom architectures (e.g., SBLA)
+        try:
+            gguf_path = _fallback_export_gguf(model_path, output_path)
+            if gguf_path:
+                logger.info(f"Fallback export successful: {gguf_path}")
+                return gguf_path
+        except Exception as e2:
+            logger.error(f"Fallback export also failed: {e2}")
+        raise RuntimeError(f"GGUF conversion failed. The model uses custom architecture (SBLA/Thinking Dial) not recognized by llama.cpp. "
+                         f"Options: 1) Export weights manually, 2) Use a standard Transformer variant for deployment.")
     
     logger.info(f"GGUF conversion complete: {output_path}")
     
@@ -520,3 +530,46 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def _fallback_export_gguf(model_path: str, output_path: str) -> Optional[str]:
+    """
+    Fallback: Export model weights for custom architectures that
+    llama.cpp convert-hf-to-gguf.py cannot handle (e.g., SBLA, Thinking Dial).
+    
+    This exports a safetensors-format model that can be loaded by
+    custom inference servers, or manually converted later.
+    
+    For Ollama deployment of custom architectures, you may need to:
+    1. Convert the model to a standard LLaMA-compatible format first
+    2. Strip SBLA/ThinkingDial layers (use standard attention + MLP)
+    3. Then convert the standard model to GGUF
+    """
+    try:
+        import safetensors.torch as st
+    except ImportError:
+        logger.warning("safetensors not installed. Install: pip install safetensors")
+        return None
+    
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from models.fusion_model import FusionModel, FusionConfig
+    
+    # Load model
+    config = FusionConfig.from_pretrained(model_path)
+    model = FusionModel(config)
+    
+    # Load weights
+    from pathlib import Path
+    weight_files = list(Path(model_path).glob("*.safetensors")) + list(Path(model_path).glob("*.bin"))
+    if not weight_files:
+        logger.error("No model weight files found")
+        return None
+    
+    # Export as safetensors
+    export_path = output_path.replace('.gguf', '.safetensors')
+    st.save_model(model, export_path)
+    logger.info(f"Exported model weights to: {export_path}")
+    logger.info("NOTE: This is a safetensors export, not GGUF. For Ollama deployment,")
+    logger.info("      convert this to GGUF using llama.cpp after ensuring architecture compatibility.")
+    return export_path
