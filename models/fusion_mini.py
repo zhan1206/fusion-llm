@@ -259,11 +259,17 @@ class FusionMiniLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         # Pre-norm + SBLA Attention + residual
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = residual + self.dropout(self.sbla_attention(hidden_states, attention_mask))
+        attn_output, present_key_value = self.sbla_attention(
+            hidden_states, attention_mask,
+            past_key_value=past_key_value, use_cache=use_cache,
+        )
+        hidden_states = residual + self.dropout(attn_output)
         
         # Pre-norm + SwiGLU FFN + residual
         residual = hidden_states
@@ -272,7 +278,7 @@ class FusionMiniLayer(nn.Module):
         up = self.up_proj(hidden_states)
         hidden_states = residual + self.dropout(self.down_proj(gate * up))
         
-        return hidden_states
+        return hidden_states, present_key_value
 
 
 class FusionMini(PreTrainedModel):
@@ -330,7 +336,8 @@ class FusionMini(PreTrainedModel):
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
         elif isinstance(module, (nn.LayerNorm, RMSNorm)):
-            module.bias.data.zero_()
+            if hasattr(module, 'bias') and module.bias is not None:
+                module.bias.data.zero_()
             module.weight.data.fill_(1.0)
         
     def forward(
@@ -338,35 +345,31 @@ class FusionMini(PreTrainedModel):
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
+        past_key_values: Optional[Tuple] = None,
         use_cache: Optional[bool] = None,
         return_dict: Optional[bool] = True,
     ) -> Tuple[torch.Tensor, ...]:
         """
         前向传播
-        
-        参数：
-            input_ids: (batch, seq_len)
-            attention_mask: (batch, seq_len)
-            labels: (batch, seq_len)（用于训练）
-            use_cache: 是否使用 KV 缓存（推理时）
-            return_dict: 是否返回字典格式
-            
-        返回：
-            (loss), logits, ...
         """
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        
         # 1. Embeddings
         hidden_states = self.embeddings(input_ids)
         
-        # 2. 处理 attention_mask - pass raw HF format to layers
-        # Each FusionMiniLayer handles mask conversion internally
-        # DO NOT pre-convert here to avoid double-conversion NaN (F1)
+        # 2. Transformer 层
+        present_key_values = () if use_cache else None
         
-        # 3. Transformer 层
-        for layer in self.layers:
-            hidden_states = layer(
+        for i, layer in enumerate(self.layers):
+            layer_past = past_key_values[i] if past_key_values is not None else None
+            hidden_states, cache = layer(
                 hidden_states,
                 attention_mask=attention_mask,
+                past_key_value=layer_past,
+                use_cache=use_cache,
             )
+            if use_cache:
+                present_key_values = present_key_values + (cache,)
         
         # 4. 最后一层 Layer Norm
         hidden_states = self.ln_f(hidden_states)
@@ -388,6 +391,9 @@ class FusionMini(PreTrainedModel):
                 shift_labels.view(-1),
             )
         
+        if use_cache:
+            return {"loss": loss, "logits": logits, "past_key_values": present_key_values}
+        
         if return_dict:
             return {"loss": loss, "logits": logits}
         
@@ -404,31 +410,33 @@ class FusionMini(PreTrainedModel):
         **kwargs,
     ):
         """
-        生成文本（简化版本）
-        
-        参数：
-            input_ids: (batch, seq_len)
-            max_new_tokens: 最大生成 token 数
-            temperature: 温度
-            top_p: nucleus sampling
-            do_sample: 是否采样
+        生成文本（使用 KV Cache 加速）
         """
-        batch_size = input_ids.shape[0]
         generated = input_ids.clone()
+        past_key_values = None
         
         self.eval()
         
         for _ in range(max_new_tokens):
-            # 前向传播
+            # Use KV cache: only pass last token after first step
+            if past_key_values is not None:
+                current_input = generated[:, -1:]
+                current_mask = torch.ones(generated.shape[0], 1, device=generated.device)
+            else:
+                current_input = generated
+                current_mask = torch.ones_like(generated, dtype=torch.float)
+            
             outputs = self.forward(
-                input_ids=generated,
-                use_cache=False,
+                input_ids=current_input,
+                attention_mask=current_mask,
+                use_cache=True,
                 return_dict=True,
+                past_key_values=past_key_values,
             )
             
             logits = outputs["logits"]
+            past_key_values = outputs.get("past_key_values")
             
-            # 取最后一个 token 的 logits
             next_token_logits = logits[:, -1, :] / temperature
             
             # Top-p sampling
@@ -463,13 +471,10 @@ class FusionMini(PreTrainedModel):
             # 追加到生成序列
             generated = torch.cat([generated, next_token], dim=1)
             
-            # 检查是否生成 EOS
+            # Check EOS
             if kwargs.get("eos_token_id") is not None:
                 if (next_token == kwargs["eos_token_id"]).all():
                     break
-            
-            # 更新 input_ids（简化：实际应使用 KV 缓存）
-            input_ids = generated
         
         return generated
 

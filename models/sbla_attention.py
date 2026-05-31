@@ -70,26 +70,32 @@ class SBLAttention(nn.Module):
         dropout: float = 0.1,
         window_size: Optional[int] = None,
         mode: str = "pure_sbla",
+        num_key_value_heads: Optional[int] = None,
     ):
         super().__init__()
         
         self.hidden_size = hidden_size
         self.num_heads = num_heads
+        self.num_key_value_heads = num_key_value_heads or num_heads
+        self.num_kv_groups = self.num_heads // self.num_key_value_heads
         self.block_size = block_size
         self.latent_dim = latent_dim
         self.head_dim = hidden_size // num_heads
+        self.kv_head_dim = self.head_dim  # Same head dim for K/V
         self.window_size = window_size or block_size  # 默认窗口=块大小
         self.mode = mode
         
         assert self.head_dim * num_heads == hidden_size, \
             f"hidden_size({hidden_size}) 必须能被 num_heads({num_heads}) 整除"
+        assert self.num_heads % self.num_key_value_heads == 0, \
+            f"num_heads({num_heads}) 必须能被 num_key_value_heads({self.num_key_value_heads}) 整除"
         assert mode in ("pure_sbla", "hybrid"), \
             f"mode 必须是 'pure_sbla' 或 'hybrid'，得到 '{mode}'"
         
-        # Q/K/V 投影
-        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        # Q/K/V 投影 (GQA: K/V use fewer heads)
+        self.q_proj = nn.Linear(hidden_size, num_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(hidden_size, self.num_key_value_heads * self.kv_head_dim, bias=False)
+        self.v_proj = nn.Linear(hidden_size, self.num_key_value_heads * self.kv_head_dim, bias=False)
         
         # 潜向量投影（跨块关联）
         self.latent_q_proj = nn.Linear(hidden_size, latent_dim, bias=False)
@@ -111,36 +117,55 @@ class SBLAttention(nn.Module):
         
         # 位置编码（用于潜向量，注入相对位置信息）
         self.block_pos_embedding = nn.Parameter(torch.randn(1, 1000, latent_dim) * 0.02)
-        
-    def _build_causal_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
+    
+    @staticmethod
+    def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
         """
-        构建因果掩码（下三角矩阵）
+        Repeat K/V heads to match Q heads for GQA.
         
-        mask[i][j] = 0 if j <= i else -inf
+        Args:
+            hidden_states: (batch, num_kv_heads, seq_len, head_dim)
+            n_rep: number of repetitions (num_heads // num_kv_heads)
+        
+        Returns:
+            (batch, num_heads, seq_len, head_dim)
+        """
+        if n_rep == 1:
+            return hidden_states
+        batch, num_kv_heads, seq_len, head_dim = hidden_states.shape
+        hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_kv_heads, n_rep, seq_len, head_dim)
+        return hidden_states.reshape(batch, num_kv_heads * n_rep, seq_len, head_dim)
+        
+    def _build_causal_mask(self, q_len: int, kv_len: int, device: torch.device) -> torch.Tensor:
+        """
+        构建因果掩码（支持非正方形，用于 KV cache）
+        
+        mask[i][j] = 0 if j <= (kv_len - q_len + i) else -inf
         即：每个 token 只能看到自己和之前的位置
         """
+        offset = kv_len - q_len
         mask = torch.triu(
-            torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
-            diagonal=1,
+            torch.ones(q_len, kv_len, device=device, dtype=torch.bool),
+            diagonal=1 + offset,
         )
         return mask.float().masked_fill(mask, float('-inf'))
     
     def _build_window_mask(
         self,
-        seq_len: int,
+        q_len: int,
+        kv_len: int,
         window_size: int,
         device: torch.device,
     ) -> torch.Tensor:
         """
-        构建滑动窗口掩码
+        构建滑动窗口掩码（支持非正方形，用于 KV cache）
         
         每个 token 只能看到前后 window_size 范围内的 token
         """
-        # 构建距离矩阵
-        positions = torch.arange(seq_len, device=device).float()
-        distance = torch.abs(positions.unsqueeze(0) - positions.unsqueeze(1))
+        q_pos = torch.arange(q_len, device=device).float() + (kv_len - q_len)
+        kv_pos = torch.arange(kv_len, device=device).float()
+        distance = torch.abs(q_pos.unsqueeze(1) - kv_pos.unsqueeze(0))
         
-        # 超过窗口范围的设为 -inf
         mask = (distance > window_size).float()
         return mask.masked_fill(mask.bool(), float('-inf'))
     
@@ -236,7 +261,9 @@ class SBLAttention(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """
         前向传播
         
@@ -244,32 +271,50 @@ class SBLAttention(nn.Module):
             hidden_states: (batch, seq_len, hidden_size)
             attention_mask: (batch, 1, 1, seq_len)，1.0=有效位置，0.0=无效位置
             output_attentions: 是否输出注意力权重
+            past_key_value: 缓存的 (K, V) 用于增量生成
+            use_cache: 是否返回缓存
             
         返回：
             output: (batch, seq_len, hidden_size)
             attentions: 注意力权重（可选）
+            present_key_value: 缓存的 (K, V)（可选）
         """
         batch_size, seq_len, _ = hidden_states.shape
         device = hidden_states.device
         
         # ========== 1. Q/K/V 投影 ==========
-        Q = self.q_proj(hidden_states)  # (batch, seq_len, hidden_size)
-        K = self.k_proj(hidden_states)
+        Q = self.q_proj(hidden_states)  # (batch, seq_len, num_heads * head_dim)
+        K = self.k_proj(hidden_states)  # (batch, seq_len, num_kv_heads * head_dim)
         V = self.v_proj(hidden_states)
         
-        # 重塑为多头: (batch, num_heads, seq_len, head_dim)
+        # 重塑为多头: Q -> (batch, num_heads, seq_len, head_dim)
         Q = Q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        K = K.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        V = V.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        # K/V -> (batch, num_kv_heads, seq_len, head_dim)
+        K = K.view(batch_size, seq_len, self.num_key_value_heads, self.kv_head_dim).transpose(1, 2)
+        V = V.view(batch_size, seq_len, self.num_key_value_heads, self.kv_head_dim).transpose(1, 2)
+        
+        # ========== KV Cache: concatenate with past ==========
+        kv_seq_len = seq_len
+        if past_key_value is not None:
+            past_K, past_V = past_key_value
+            kv_seq_len = past_K.shape[2] + seq_len
+            K = torch.cat([past_K, K], dim=2)
+            V = torch.cat([past_V, V], dim=2)
+        
+        present_key_value = (K, V) if use_cache else None
+        
+        # GQA: expand K/V to match Q heads
+        K = self._repeat_kv(K, self.num_kv_groups)  # (batch, num_heads, kv_seq_len, head_dim)
+        V = self._repeat_kv(V, self.num_kv_groups)
         
         # ========== 2. 构建注意力掩码 ==========
         
-        # 因果掩码（自回归必需）
-        causal_mask = self._build_causal_mask(seq_len, device)  # (seq_len, seq_len)
+        # 因果掩码（自回归必需）- size matches (Q_seq_len, kv_seq_len)
+        causal_mask = self._build_causal_mask(seq_len, kv_seq_len, device)  # (seq_len, kv_seq_len)
         
         # 窗口掩码（如果使用 pure_sbla 模式）
         if self.mode == "pure_sbla":
-            window_mask = self._build_window_mask(seq_len, self.window_size, device)
+            window_mask = self._build_window_mask(seq_len, kv_seq_len, self.window_size, device)
             combined_mask = causal_mask + window_mask  # 取并集
         else:
             combined_mask = causal_mask
@@ -280,21 +325,36 @@ class SBLAttention(nn.Module):
         if attention_mask is not None:
             if attention_mask.dim() == 2:
                 # Raw HF format: (batch, seq_len), 1=valid, 0=padding
-                padding_mask = (1.0 - attention_mask.float()).unsqueeze(1).unsqueeze(2)  # (batch, 1, 1, seq_len)
-                padding_mask = padding_mask * torch.finfo(hidden_states.dtype).min
-                combined_mask = combined_mask.unsqueeze(0).unsqueeze(0) + padding_mask  # (1, 1, seq, seq) + (batch, 1, 1, seq)
-            elif attention_mask.dim() == 4:
-                # Pre-expanded format (already converted, e.g. from FusionMini)
-                ext_mask = attention_mask.squeeze(1)  # (batch, 1, seq_len)
-                padding_mask = (1.0 - ext_mask) * float('-inf')  # (batch, 1, seq_len)
-                combined_mask = combined_mask.unsqueeze(0) + padding_mask.unsqueeze(1)
-            else:
-                # 3D fallback
-                padding_mask = (1.0 - attention_mask.float()).unsqueeze(1)  # (batch, 1, 1, seq_len)
+                # For KV cache: mask covers kv_seq_len positions
+                if past_key_value is not None:
+                    # Past tokens are all valid; only current tokens may have padding
+                    full_mask = torch.ones(batch_size, kv_seq_len, device=device, dtype=attention_mask.dtype)
+                    full_mask[:, -seq_len:] = attention_mask
+                    padding_mask = (1.0 - full_mask.float()).unsqueeze(1).unsqueeze(2)
+                else:
+                    padding_mask = (1.0 - attention_mask.float()).unsqueeze(1).unsqueeze(2)
                 padding_mask = padding_mask * torch.finfo(hidden_states.dtype).min
                 combined_mask = combined_mask.unsqueeze(0).unsqueeze(0) + padding_mask
+            elif attention_mask.dim() == 4:
+                ext_mask = attention_mask.squeeze(1)  # (batch, 1, seq_len)
+                if past_key_value is not None:
+                    full_mask = torch.ones(batch_size, 1, kv_seq_len, device=device, dtype=ext_mask.dtype)
+                    full_mask[:, :, -seq_len:] = ext_mask
+                    padding_mask = (1.0 - full_mask) * float('-inf')
+                else:
+                    padding_mask = (1.0 - ext_mask) * float('-inf')
+                combined_mask = combined_mask.unsqueeze(0) + padding_mask.unsqueeze(1)
+            else:
+                padding_mask = (1.0 - attention_mask.float()).unsqueeze(1)  # (batch, 1, 1, seq_len)
+                if past_key_value is not None:
+                    full_mask = torch.ones(batch_size, 1, 1, kv_seq_len, device=device, dtype=attention_mask.dtype)
+                    full_mask[:, :, :, -seq_len:] = attention_mask.unsqueeze(1)
+                    padding_mask = (1.0 - full_mask.float()) * torch.finfo(hidden_states.dtype).min
+                else:
+                    padding_mask = padding_mask * torch.finfo(hidden_states.dtype).min
+                combined_mask = combined_mask.unsqueeze(0).unsqueeze(0) + padding_mask
         else:
-            combined_mask = combined_mask.unsqueeze(0)  # (1, 1, seq_len, seq_len)
+            combined_mask = combined_mask.unsqueeze(0)  # (1, 1, seq_len, kv_seq_len)
         
         # ========== 3. 块内窗口注意力 ==========
         attn_scores = torch.matmul(Q, K.transpose(-1, -2)) / math.sqrt(self.head_dim)
@@ -310,15 +370,34 @@ class SBLAttention(nn.Module):
         output_std = self.out_proj(context)
         
         # ========== 4. SBLA 跨块潜向量关联 ==========
+        # NOTE: Block latent computation uses current hidden_states only.
+        # For incremental generation with KV cache, we skip SBLA latent contribution
+        # since a single token cannot form a meaningful block. The standard attention
+        # path already benefits from KV cache. This is a known limitation - full
+        # incremental SBLA would require caching block latents across steps.
+        if past_key_value is not None and seq_len <= 1:
+            # Incremental step: skip block latent computation
+            gate_value = torch.sigmoid(self.gate)
+            output = output_std  # No latent contribution for single-token steps
+            output = self.LayerNorm(output)
+            output = self.dropout(output)
+            if output_attentions:
+                return output, None, present_key_value
+            return output, present_key_value
         
-        # 计算块潜向量（正确处理 padding）
+        # Normalize attention_mask for block latent computation
+        # _compute_block_latents expects 4D mask or None
+        latent_mask = attention_mask
+        if attention_mask is not None and attention_mask.dim() == 2:
+            latent_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # (batch, 1, 1, seq_len)
+        
         (
             blk_q, blk_k, blk_v,
             num_blocks, real_block_sizes,
-        ) = self._compute_block_latents(hidden_states, attention_mask)
+        ) = self._compute_block_latents(hidden_states, latent_mask)
         
         # 跨块潜向量注意力（支持因果：块 i 只能 attend 到块 <= i）
-        latent_causal_mask = self._build_causal_mask(num_blocks, device)  # (num_blocks, num_blocks)
+        latent_causal_mask = self._build_causal_mask(num_blocks, num_blocks, device)  # (num_blocks, num_blocks)
         latent_attn_scores = torch.matmul(blk_q, blk_k.transpose(-1, -2)) / math.sqrt(self.latent_dim)
         latent_attn_scores = latent_attn_scores + latent_causal_mask.unsqueeze(0)
         
@@ -350,9 +429,9 @@ class SBLAttention(nn.Module):
         output = self.dropout(output)
         
         if output_attentions:
-            return output, attn_probs
+            return output, attn_probs, present_key_value
         
-        return output
+        return output, present_key_value
 
 
 # 别名（兼容旧代码）
@@ -380,7 +459,7 @@ if __name__ == "__main__":
     hidden_states = torch.randn(batch_size, seq_len, 128)
     attention_mask = torch.ones(batch_size, 1, 1, seq_len)
     
-    output = sbla.forward(hidden_states=hidden_states, attention_mask=attention_mask)
+    output, cache = sbla.forward(hidden_states=hidden_states, attention_mask=attention_mask)
     
     assert output.shape == (batch_size, seq_len, 128), \
         f"Output shape mismatch: {output.shape}"
@@ -391,19 +470,18 @@ if __name__ == "__main__":
     print("\n[Test 2] Causal mask correctness")
     sbla.eval()
     with torch.no_grad():
-        # 固定输入，检查输出是否确定性的
         test_input = torch.randn(1, 20, 128)
-        out1 = sbla(test_input)
-        out2 = sbla(test_input)
+        out1, _ = sbla(test_input)
+        out2, _ = sbla(test_input)
         assert torch.allclose(out1, out2), "Non-deterministic output in eval mode!"
     print("   OK: eval mode deterministic")
     
     # 测试 3：Padding 处理
     print("\n[Test 3] Padding handling")
     mask = torch.ones(batch_size, 1, 1, seq_len)
-    mask[0, :, :, 30:] = 0.0  # 第一个样本的后18个位置是 padding
+    mask[0, :, :, 30:] = 0.0
     
-    output_with_pad = sbla.forward(
+    output_with_pad, _ = sbla.forward(
         hidden_states=hidden_states,
         attention_mask=mask,
     )
@@ -423,13 +501,47 @@ if __name__ == "__main__":
         mode="hybrid",
     )
     
-    output_hybrid = sbla_hybrid(hidden_states, attention_mask)
+    output_hybrid, _ = sbla_hybrid(hidden_states, attention_mask)
     assert output_hybrid.shape == (batch_size, seq_len, 128)
     assert not torch.isnan(output_hybrid).any()
     print(f"   OK: hybrid mode works")
     
-    # 测试 5：参数量对比
-    std_params = sum(p.numel() for p in sbla.parameters())
-    print(f"\n[Test 5] Parameter count: {std_params:,}")
+    # 测试 5：KV Cache
+    print("\n[Test 5] KV Cache incremental generation")
+    sbla_kv = SBLAttention(
+        hidden_size=128, num_heads=4, block_size=16, latent_dim=32, mode="hybrid",
+    )
+    sbla_kv.eval()
+    with torch.no_grad():
+        # Full forward
+        full_out, full_cache = sbla_kv(hidden_states[:, :20, :], torch.ones(2, 20), use_cache=True)
+        assert full_cache is not None, "Cache should be returned"
+        assert full_cache[0].shape[2] == 20, f"Cache K shape: {full_cache[0].shape}"
+        # Incremental step
+        inc_out, inc_cache = sbla_kv(
+            hidden_states[:, 20:21, :], torch.ones(2, 1),
+            past_key_value=full_cache, use_cache=True,
+        )
+        assert inc_out.shape == (2, 1, 128), f"Incremental output shape: {inc_out.shape}"
+        assert inc_cache[0].shape[2] == 21, f"Incremental cache shape: {inc_cache[0].shape}"
+    print("   OK: KV cache works")
     
-    print("\n[ALL TESTS PASSED] SBLA Attention v2 implementation verified.")
+    # 测试 6：GQA
+    print("\n[Test 6] GQA (grouped-query attention)")
+    sbla_gqa = SBLAttention(
+        hidden_size=128, num_heads=4, block_size=16, latent_dim=32,
+        num_key_value_heads=2, mode="hybrid",
+    )
+    sbla_gqa.eval()
+    with torch.no_grad():
+        gqa_out, _ = sbla_gqa(hidden_states, torch.ones(2, 48))
+        assert gqa_out.shape == (2, 48, 128)
+        assert not torch.isnan(gqa_out).any()
+    print("   OK: GQA works")
+    
+    # 测试 7：参数量对比
+    std_params = sum(p.numel() for p in sbla.parameters())
+    gqa_params = sum(p.numel() for p in sbla_gqa.parameters())
+    print(f"\n[Test 7] Parameter count: standard={std_params:,}, GQA={gqa_params:,}")
+    
+    print("\n[ALL TESTS PASSED] SBLA Attention v3 with KV Cache + GQA verified.")

@@ -134,10 +134,6 @@ class FusionAttention(nn.Module):
     def __init__(self, config: FusionConfig):
         super().__init__()
         
-        # TODO(S2): GQA not yet implemented - num_key_value_heads is stored in config
-        # but SBLAttention uses num_attention_heads for all Q/K/V projections.
-        # To implement GQA: split Q/K/V projections, use num_key_value_heads for K/V,
-        # and add repeat_kv() expansion for attention computation.
         mode = getattr(config, 'sbla_mode', 'hybrid')
         self.sbla = SBLAttention(
             hidden_size=config.hidden_size,
@@ -147,6 +143,7 @@ class FusionAttention(nn.Module):
             dropout=config.attention_probs_dropout_prob,
             window_size=config.block_size,  # window = block_size by default
             mode=mode,
+            num_key_value_heads=config.num_key_value_heads,
         )
     
     def forward(
@@ -156,27 +153,13 @@ class FusionAttention(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        # TODO(S1): KV Cache is currently decorative - SBLA recomputes full Q/K/V internally.
-        # For true incremental generation, SBLA.forward needs to accept past_key_value
-        # and only compute Q for new tokens, reusing cached K/V.
-        # Present implementation: always full recomputation, cache returned but unused.
-        output = self.sbla(hidden_states, attention_mask)
-        
-        present_key_value = None
-        if use_cache:
-            # Cache K/V for potential future use when SBLA supports incremental mode
-            batch_size, seq_len, _ = hidden_states.shape
-            K = self.sbla.k_proj(hidden_states)
-            V = self.sbla.v_proj(hidden_states)
-            num_heads = self.sbla.num_heads
-            head_dim = self.sbla.head_dim
-            K = K.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
-            V = V.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
-            if past_key_value is not None:
-                K = torch.cat([past_key_value[0], K], dim=2)
-                V = torch.cat([past_key_value[1], V], dim=2)
-            present_key_value = (K, V)
-        
+        # S1 FIXED: KV Cache now works natively through SBLAttention.
+        # SBLAttention handles past_key_value concatenation internally.
+        output, present_key_value = self.sbla(
+            hidden_states, attention_mask,
+            past_key_value=past_key_value,
+            use_cache=use_cache,
+        )
         return output, present_key_value
 
 
@@ -294,8 +277,9 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         #     attention_mask = (1.0 - float_mask) * torch.finfo(hidden_states.dtype).min
         
         # Transformer 层（支持 KV Cache）
-        past_key_values = kwargs.get("past_key_values", None)
-        use_cache = kwargs.get("use_cache", False) or (past_key_values is not None)
+        # Use the already-resolved use_cache from parameter, don't re-override from kwargs
+        if past_key_values is not None:
+            use_cache = True
         
         present_key_values = () if use_cache else None
         
