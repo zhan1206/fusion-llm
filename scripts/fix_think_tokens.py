@@ -1,57 +1,65 @@
 #!/usr/bin/env python3
-"""Fix think token naming consistency across the project."""
+"""Fix think token format across the project.
+
+Ensures all files use the unified <|think_depth_N|> format,
+not the old <|think| depth=N|> format.
+"""
 import re
-import glob
+import sys
+from pathlib import Path
 
-# Target format: <|think_depth_0|>, <|think_depth_1|>, etc.
+# Old format patterns (to replace)
+OLD_INLINE = re.compile(r'<\|think\|\s*depth=(\d+)\|>')
+OLD_FSTRING = re.compile(r'f"<\|think\|\s*depth=\{(\w+)\}\|>"')
+OLD_TEMPLATE = '<|think| depth='
 
-def fix_file(filepath):
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+# New format
+NEW_INLINE = r'<|think_depth_\1|>'
+NEW_FSTRING = r'f"<|think_depth_{\1}|>"'
+
+
+def fix_file(filepath: Path) -> bool:
+    """Fix think tokens in a single file. Returns True if changes were made."""
+    try:
+        content = filepath.read_text(encoding='utf-8')
+    except Exception:
+        return False
     
     original = content
     
-    # Replace THINK_START/THINK_END constants
-    content = content.replace('THINK_START = "<|think_depth_"', 'THINK_START = "<|think_depth_"')
-    content = content.replace('THINK_END = "|>"', 'THINK_END = "|>"')
+    # Fix inline occurrences: <|think| depth=N|> -> <|think_depth_N|>
+    content = OLD_INLINE.sub(NEW_INLINE, content)
     
-    # Replace build_think_token return
-    content = content.replace(
-        'return f"{THINK_START}{depth}{THINK_END}"',
-        'return f"{THINK_START}{depth}{THINK_END}"'
-    )
-    
-    # Replace THINK_DEPTH_PATTERN regex
-    content = content.replace(
-        'THINK_DEPTH_PATTERN = re.compile(r"<\\|think\\| depth=(\\d+)\\|>")',
-        'THINK_DEPTH_PATTERN = re.compile(r"<\\|think_depth_(\\d+)\\|>")'
-    )
-    
-    # Replace any inline <|think| depth=N|> with <|think_depth_N|>
-    content = re.sub(r'<\|think\|\s*depth=(\d+)\|>', r'<|think_depth_\1|>', content)
+    # Fix f-string templates: f"<|think| depth={var}|>" -> f"<|think_depth_{var}|>"
+    content = OLD_FSTRING.sub(NEW_FSTRING, content)
     
     if content != original:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(content)
-        print(f"  Fixed: {filepath}")
+        filepath.write_text(content, encoding='utf-8')
+        count = sum(1 for a, b in zip(original.split('\n'), content.split('\n')) if a != b)
+        print(f"  Fixed {filepath} ({count} lines)")
         return True
-    else:
-        print(f"  No change: {filepath}")
-        return False
+    return False
 
-files = glob.glob("**/*.py", recursive=True) + glob.glob("**/*.json", recursive=True)
-fixed = 0
-for f in sorted(files):
-    # Skip data files and output
-    if any(skip in f for skip in ['node_modules', '.git', 'output/']):
-        continue
-    try:
-        with open(f, 'r', encoding='utf-8') as fh:
-            text = fh.read()
-        if '<|think|' in text or 'think| depth=' in text:
-            if fix_file(f):
-                fixed += 1
-    except:
-        pass
 
-print(f"\nTotal files fixed: {fixed}")
+def main():
+    project_root = Path(__file__).parent.parent
+    
+    # Scan all Python files
+    changed = 0
+    for py_file in project_root.rglob('*.py'):
+        if fix_file(py_file):
+            changed += 1
+    
+    # Also check JSON data files
+    for json_file in project_root.rglob('*.json'):
+        if 'node_modules' in str(json_file):
+            continue
+        if fix_file(json_file):
+            changed += 1
+    
+    print(f"\nTotal files fixed: {changed}")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

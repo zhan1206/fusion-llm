@@ -357,11 +357,9 @@ class FusionMini(PreTrainedModel):
         # 1. Embeddings
         hidden_states = self.embeddings(input_ids)
         
-        # 2. 处理 attention_mask
-        if attention_mask is not None:
-            # 转换为 (batch, 1, 1, seq_len) 格式
-            attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-            attention_mask = (1.0 - attention_mask) * -10000.0
+        # 2. 处理 attention_mask - pass raw HF format to layers
+        # Each FusionMiniLayer handles mask conversion internally
+        # DO NOT pre-convert here to avoid double-conversion NaN (F1)
         
         # 3. Transformer 层
         for layer in self.layers:

@@ -96,8 +96,8 @@ class FusionConfig(PretrainedConfig):
         # SBLA 参数
         self.block_size = block_size
         self.latent_dim = latent_dim
-        self.sbla_window_size = sbla_window_size or block_size
-        self.window_size = window_size or self.sbla_window_size  # Unified field
+        self.window_size = window_size or sbla_window_size or block_size
+        self.sbla_window_size = self.window_size  # Keep as alias for backward compat
         self.sbla_mode = sbla_mode
         
         # Thinking Dial 参数
@@ -134,6 +134,10 @@ class FusionAttention(nn.Module):
     def __init__(self, config: FusionConfig):
         super().__init__()
         
+        # TODO(S2): GQA not yet implemented - num_key_value_heads is stored in config
+        # but SBLAttention uses num_attention_heads for all Q/K/V projections.
+        # To implement GQA: split Q/K/V projections, use num_key_value_heads for K/V,
+        # and add repeat_kv() expansion for attention computation.
         mode = getattr(config, 'sbla_mode', 'hybrid')
         self.sbla = SBLAttention(
             hidden_size=config.hidden_size,
@@ -152,12 +156,15 @@ class FusionAttention(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        # Delegate to SBLAttention
+        # TODO(S1): KV Cache is currently decorative - SBLA recomputes full Q/K/V internally.
+        # For true incremental generation, SBLA.forward needs to accept past_key_value
+        # and only compute Q for new tokens, reusing cached K/V.
+        # Present implementation: always full recomputation, cache returned but unused.
         output = self.sbla(hidden_states, attention_mask)
         
-        # KV Cache: extract from SBLA's Q/K projections for cache reuse
         present_key_value = None
         if use_cache:
+            # Cache K/V for potential future use when SBLA supports incremental mode
             batch_size, seq_len, _ = hidden_states.shape
             K = self.sbla.k_proj(hidden_states)
             V = self.sbla.v_proj(hidden_states)
@@ -277,12 +284,14 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         else:
             raise ValueError("Either input_ids or inputs_embeds must be provided")
         
-        # 处理 attention_mask
-        if attention_mask is not None:
-            if attention_mask.dim() == 2:
-                attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-            float_mask = attention_mask.to(dtype=hidden_states.dtype)
-            attention_mask = (1.0 - float_mask) * torch.finfo(hidden_states.dtype).min
+        # 处理 attention_mask - pass raw HF format (1=valid, 0=padding) to SBLA
+        # SBLAttention handles the conversion internally
+        # DO NOT convert here - it would cause double-conversion NaN (F1)
+        # if attention_mask is not None:
+        #     if attention_mask.dim() == 2:
+        #         attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+        #     float_mask = attention_mask.to(dtype=hidden_states.dtype)
+        #     attention_mask = (1.0 - float_mask) * torch.finfo(hidden_states.dtype).min
         
         # Transformer 层（支持 KV Cache）
         past_key_values = kwargs.get("past_key_values", None)

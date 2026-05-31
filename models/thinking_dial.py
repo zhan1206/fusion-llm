@@ -36,7 +36,7 @@ Thinking Dial（动态推理强度控制）- 真实实现
 import torch
 import torch.nn as nn
 import re
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass
 from transformers import PreTrainedModel, GenerationMixin
 

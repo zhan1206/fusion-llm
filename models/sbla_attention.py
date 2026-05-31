@@ -275,12 +275,24 @@ class SBLAttention(nn.Module):
             combined_mask = causal_mask
         
         # 应用外部 attention_mask（padding mask）
+        # Supports both raw HF format (batch, seq_len) with 1=valid/0=padding,
+        # and pre-expanded format (batch, 1, 1, seq_len).
         if attention_mask is not None:
-            # attention_mask: (batch, 1, 1, seq_len) -> 扩展为 (batch, 1, seq_len, seq_len)
-            ext_mask = attention_mask.squeeze(1)  # (batch, 1, seq_len)
-            # 将 padding 位置设为 -inf
-            padding_mask = (1.0 - ext_mask) * float('-inf')  # (batch, 1, seq_len)
-            combined_mask = combined_mask.unsqueeze(0) + padding_mask.unsqueeze(1)  # (batch, 1, seq_len, seq_len)
+            if attention_mask.dim() == 2:
+                # Raw HF format: (batch, seq_len), 1=valid, 0=padding
+                padding_mask = (1.0 - attention_mask.float()).unsqueeze(1).unsqueeze(2)  # (batch, 1, 1, seq_len)
+                padding_mask = padding_mask * torch.finfo(hidden_states.dtype).min
+                combined_mask = combined_mask.unsqueeze(0).unsqueeze(0) + padding_mask  # (1, 1, seq, seq) + (batch, 1, 1, seq)
+            elif attention_mask.dim() == 4:
+                # Pre-expanded format (already converted, e.g. from FusionMini)
+                ext_mask = attention_mask.squeeze(1)  # (batch, 1, seq_len)
+                padding_mask = (1.0 - ext_mask) * float('-inf')  # (batch, 1, seq_len)
+                combined_mask = combined_mask.unsqueeze(0) + padding_mask.unsqueeze(1)
+            else:
+                # 3D fallback
+                padding_mask = (1.0 - attention_mask.float()).unsqueeze(1)  # (batch, 1, 1, seq_len)
+                padding_mask = padding_mask * torch.finfo(hidden_states.dtype).min
+                combined_mask = combined_mask.unsqueeze(0).unsqueeze(0) + padding_mask
         else:
             combined_mask = combined_mask.unsqueeze(0)  # (1, 1, seq_len, seq_len)
         

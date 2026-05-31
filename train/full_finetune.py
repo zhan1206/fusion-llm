@@ -89,7 +89,7 @@ class FusionFullFinetuneDataset(Dataset):
         think_rank = item.get("think_rank", 0)
         
         if think_rank > 0:
-            thinking_token = f"<|think| depth={think_rank}|>"
+            thinking_token = f"<|think_depth_{think_rank}|>"
             full_text = f"{thinking_token}\n{prompt}\n{response}"
         else:
             full_text = f"{prompt}\n{response}"
@@ -112,6 +112,7 @@ class FusionFullFinetuneDataset(Dataset):
 def create_local_model(
     model_size: str = "8B",
     torch_dtype: torch.dtype = torch.bfloat16,
+    vocab_size_override: Optional[int] = None,
 ):
     """
     创建本地 FusionModel（无需预训练权重）
@@ -132,6 +133,12 @@ def create_local_model(
     
     config_dict = model_configs[model_size]
     
+    # S3 fix: override vocab_size to match actual tokenizer
+    if vocab_size_override is not None:
+        config_dict['vocab_size'] = vocab_size_override
+    if vocab_size_override is not None:
+        config_dict['vocab_size'] = vocab_size_override
+    
     common_config = dict(
         block_size=512,
         latent_dim=64,
@@ -145,6 +152,18 @@ def create_local_model(
     )
     
     config = FusionConfig(**config_dict, **common_config)
+    
+    # Override vocab_size if tokenizer has different size (S3 fix)
+    if vocab_size_override is not None and vocab_size_override != config.vocab_size:
+        logger.warning(f"[S3-fix] Overriding model vocab_size: {config.vocab_size} -> {vocab_size_override}")
+        config.vocab_size = vocab_size_override
+    
+    # S3-fix: sync vocab_size to actual tokenizer if provided
+    if vocab_size_override is not None:
+        if vocab_size_override != config.vocab_size:
+            logger.warning(f"[S3-fix] Overriding vocab_size: {config.vocab_size} -> {vocab_size_override}")
+            model.resize_token_embeddings(vocab_size_override)
+        config.vocab_size = vocab_size_override
     
     logger.info(f"[create_local_model] 创建 Fusion-{model_size}（随机初始化）")
     logger.info(f"  hidden_size={config.hidden_size}, layers={config.num_hidden_layers}, "
@@ -162,8 +181,7 @@ def create_tokenizer(tokenizer_type: str = "fusion", vocab_size: int = 32000):
     """
     Create tokenizer using the unified tokenizer module.
     """
-    effective_vocab = get_effective_vocab_size(tokenizer_type, vocab_size)
-    logger.info(f"[create_tokenizer] Creating tokenizer: type={tokenizer_type}, effective_vocab={effective_vocab}")
+    logger.info(f"[create_tokenizer] Creating tokenizer: type={tokenizer_type}, vocab_size={vocab_size}")
     tokenizer = get_tokenizer(tokenizer_type, vocab_size=vocab_size)
     return tokenizer
 
@@ -192,8 +210,14 @@ def train(args):
     vocab_size_map = {"0.5B": 32000, "1.5B": 32000, "8B": 100000, "14B": 100000}
     tokenizer = create_tokenizer(vocab_size=vocab_size_map.get(args.model_size, 32000))
     
+    # Sync vocab_size to actual tokenizer size to prevent index-out-of-range (S3)
+    actual_vocab_size = len(tokenizer)
+    if actual_vocab_size != vocab_size_map.get(args.model_size, 32000):
+        logger.warning(f"[S3-fix] Vocab size mismatch: config={vocab_size_map.get(args.model_size, 32000)}, tokenizer={actual_vocab_size}. Syncing to tokenizer.")
+        vocab_size_map[args.model_size] = actual_vocab_size
+    
     # 3. 创建模型（本地随机初始化）
-    model, config = create_local_model(args.model_size, torch_dtype=args.torch_dtype)
+    model, config = create_local_model(args.model_size, torch_dtype=args.torch_dtype, vocab_size_override=actual_vocab_size)
     
     # 4. 加载数据集
     train_dataset = FusionFullFinetuneDataset(

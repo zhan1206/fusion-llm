@@ -104,7 +104,7 @@ class FusionDataset(Dataset):
         
         # 注入 Thinking Dial 控制 token
         if self.add_thinking_token and think_rank > 0:
-            thinking_token = f"<|think| depth={think_rank}|>"
+            thinking_token = f"<|think_depth_{think_rank}|>"
             full_text = f"{thinking_token}\n{prompt}\n{response}"
         else:
             full_text = f"{prompt}\n{response}"
