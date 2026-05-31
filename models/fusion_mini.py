@@ -46,6 +46,7 @@ from pathlib import Path
 
 # 导入 SBLA 注意力
 from .sbla_attention import SBLAttention
+from .fusion_model import RMSNorm
 
 
 class FusionMiniConfig(PretrainedConfig):
@@ -64,7 +65,7 @@ class FusionMiniConfig(PretrainedConfig):
         num_hidden_layers: int = 4,
         num_attention_heads: int = 4,
         intermediate_size: int = 512,
-        hidden_act: str = "gelu",
+        hidden_act: str = "silu",
         max_position_embeddings: int = 512,
         initializer_range: float = 0.02,
         use_cache: bool = True,
@@ -124,9 +125,9 @@ class FusionMiniEmbeddings(nn.Module):
             config.hidden_size,
         )
         
-        self.LayerNorm = nn.LayerNorm(
+        self.LayerNorm = RMSNorm(
             config.hidden_size,
-            eps=1e-12,
+            eps=1e-6,
         )
         
         self.dropout = nn.Dropout(0.1)
@@ -224,25 +225,34 @@ class FusionMiniAttention(nn.Module):
 
 class FusionMiniLayer(nn.Module):
     """
-    Fusion Mini Transformer 层（使用SBLA注意力）
+    Fusion Mini Transformer 层
+    
+    Unified with FusionModel: uses RMSNorm + SwiGLU FFN
     """
     
     def __init__(self, config: FusionMiniConfig):
         super().__init__()
         
-        # 使用 SBLA 注意力（替换标准注意力）
+        # Input RMSNorm (pre-norm, same as FusionModel)
+        self.input_layernorm = RMSNorm(config.hidden_size, eps=1e-6)
+        
+        # SBLA Attention
         self.sbla_attention = SBLAttention(
             hidden_size=config.hidden_size,
             num_heads=config.num_attention_heads,
-            block_size=64,  # 小模型用较小分块
+            block_size=64,
             latent_dim=config.hidden_size // 8,
             dropout=0.1,
         )
         
-        self.intermediate = nn.Linear(config.hidden_size, config.intermediate_size)
-        self.output = nn.Linear(config.intermediate_size, config.hidden_size)
+        # Post-attention RMSNorm
+        self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=1e-6)
         
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        # SwiGLU FFN (same as FusionModel)
+        self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+        
         self.dropout = nn.Dropout(0.1)
         
     def forward(
@@ -250,23 +260,17 @@ class FusionMiniLayer(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """
-        参数：
-            hidden_states: (batch, seq_len, hidden_size)
-            attention_mask: (batch, 1, 1, seq_len)
-        """
-        # SBLA 注意力 + 残差连接
-        attention_output = self.sbla_attention(hidden_states, attention_mask)
-        hidden_states = self.LayerNorm(hidden_states + attention_output)
+        # Pre-norm + SBLA Attention + residual
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = residual + self.dropout(self.sbla_attention(hidden_states, attention_mask))
         
-        # FFN
-        intermediate_output = self.intermediate(hidden_states)
-        intermediate_output = F.gelu(intermediate_output)
-        ffn_output = self.output(intermediate_output)
-        ffn_output = self.dropout(ffn_output)
-        
-        # 残差连接 + LayerNorm
-        hidden_states = self.LayerNorm(hidden_states + ffn_output)
+        # Pre-norm + SwiGLU FFN + residual
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        gate = F.silu(self.gate_proj(hidden_states))
+        up = self.up_proj(hidden_states)
+        hidden_states = residual + self.dropout(self.down_proj(gate * up))
         
         return hidden_states
 
@@ -295,7 +299,7 @@ class FusionMini(PreTrainedModel):
         ])
         
         # 3. Layer Norm（最后一层后）
-        self.ln_f = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.ln_f = RMSNorm(config.hidden_size, eps=1e-6)
         
         # 4. LM Head
         self.lm_head = nn.Linear(
@@ -325,7 +329,7 @@ class FusionMini(PreTrainedModel):
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
-        elif isinstance(module, nn.LayerNorm):
+        elif isinstance(module, (nn.LayerNorm, RMSNorm)):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
         

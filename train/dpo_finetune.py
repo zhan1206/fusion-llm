@@ -74,6 +74,34 @@ class DPOTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.step = 0
         
+    def _get_tokenizer(self) -> object:
+        """Get tokenizer with fallback to character-level encoding."""
+        try:
+            from models.tokenizer import get_tokenizer
+            return get_tokenizer("gpt2")
+        except Exception:
+            return None
+    
+    def _tokenize(self, text: str, max_len: int) -> torch.Tensor:
+        """Tokenize text using proper tokenizer, falling back to character-level."""
+        if self._tokenizer is not None:
+            encoded = self._tokenizer.encode(text, truncation=True, max_length=max_len, padding='max_length')
+            return torch.tensor(encoded, dtype=torch.long)
+        
+        # Fallback: UTF-8 byte-level encoding
+        encoded = list(text.encode('utf-8'))[:max_len]
+        padded = encoded + [0] * (max_len - len(encoded))
+        return torch.tensor(padded, dtype=torch.long)
+    
+    def _detokenize(self, token_ids: list) -> str:
+        """Convert token IDs back to text."""
+        if self._tokenizer is not None:
+            return self._tokenizer.decode(token_ids, skip_special_tokens=True)
+        try:
+            return bytes(token_ids).decode('utf-8', errors='replace')
+        except Exception:
+            return ""
+    
     def load_model(self) -> tuple:
         """Load model and create reference copy."""
         config_path = Path(self.config.model_path)
@@ -113,6 +141,13 @@ class DPOTrainer:
         ref_policy.eval()
         for p in ref_policy.parameters():
             p.requires_grad = False
+        
+        # Initialize tokenizer
+        self._tokenizer = self._get_tokenizer()
+        if self._tokenizer is not None:
+            print(f"Using tokenizer: vocab_size={self._tokenizer.vocab_size}")
+        else:
+            print("Warning: No tokenizer available, using UTF-8 byte-level fallback")
         
         return policy, ref_policy
     
@@ -155,12 +190,6 @@ class DPOTrainer:
         print(f"Generated {len(pairs)} synthetic pairs, saved to {out_path}")
         
         return pairs
-    
-    def _tokenize(self, text: str, max_len: int) -> torch.Tensor:
-        """Simple character-level tokenization."""
-        encoded = list(text.encode('utf-8'))[:max_len]
-        padded = encoded + [0] * (max_len - len(encoded))
-        return torch.tensor(padded, dtype=torch.long)
     
     def _get_log_probs(self, model: nn.Module, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """Compute log probabilities of sequences under model."""

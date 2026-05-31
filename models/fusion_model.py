@@ -69,6 +69,7 @@ class FusionConfig(PretrainedConfig):
         block_size: int = 512,
         latent_dim: int = 64,
         sbla_window_size: Optional[int] = None,
+        window_size: Optional[int] = None,  # Alias for sbla_window_size (for HF compatibility)
         sbla_mode: str = "pure_sbla",
         # Thinking Dial 参数
         enable_thinking_dial: bool = True,
@@ -96,6 +97,7 @@ class FusionConfig(PretrainedConfig):
         self.block_size = block_size
         self.latent_dim = latent_dim
         self.sbla_window_size = sbla_window_size or block_size
+        self.window_size = window_size or self.sbla_window_size  # Unified field
         self.sbla_mode = sbla_mode
         
         # Thinking Dial 参数

@@ -76,6 +76,7 @@ class InferenceEngine:
         self.model.eval()
         self.inference_config = InferenceConfig()
         self.kv_cache = None
+        self._init_tokenizer()
         
     def _load_model(self, model_path: str) -> tuple:
         """Load model from path."""
@@ -106,7 +107,11 @@ class InferenceEngine:
         return model, model_config
     
     def set_think_rank(self, rank: int):
-        """Apply Thinking Dial preset by rank."""
+        """Apply Thinking Dial preset by rank.
+        
+        Thinking Dial controls both sampling parameters AND optional
+        thinking token injection for architecture-level depth control.
+        """
         if rank not in self.THINK_RANK_PRESETS:
             print(f"Invalid think_rank {rank}, must be 0-3")
             return
@@ -117,16 +122,41 @@ class InferenceEngine:
         self.inference_config.top_p = preset["top_p"]
         self.inference_config.max_new_tokens = preset["max_new_tokens"]
         self.inference_config.repetition_penalty = preset["repetition_penalty"]
+        
+        # Architecture-level Thinking Dial: inject thinking depth token
+        self._thinking_depth_token = None
+        if hasattr(self.model.config, 'enable_thinking_dial') and self.model.config.enable_thinking_dial:
+            try:
+                from models.thinking_dial import ThinkingDialProcessor
+                processor = ThinkingDialProcessor(self._tokenizer or get_tokenizer("gpt2"))
+                self._thinking_depth_token = processor.get_think_token(rank)
+            except Exception:
+                pass
+        
         print(f"[Thinking Dial] Rank {rank}: temp={preset['temperature']}, "
               f"top_p={preset['top_p']}, max_tokens={preset['max_new_tokens']}")
     
+        try:
+            from models.tokenizer import get_tokenizer
+            self._tokenizer = get_tokenizer("gpt2")
+            print(f"Tokenizer loaded: vocab_size={self._tokenizer.vocab_size}")
+        except Exception:
+            self._tokenizer = None
+            print("Warning: No tokenizer available, using UTF-8 byte-level fallback")
+
     def _tokenize(self, text: str) -> torch.Tensor:
-        """Simple character-level tokenization."""
+        """Tokenize text using proper tokenizer, falling back to UTF-8 bytes."""
+        if self._tokenizer is not None:
+            encoded = self._tokenizer.encode(text, truncation=True, max_length=self.config.max_position_embeddings)
+            return torch.tensor([encoded], dtype=torch.long).to(self.device)
+        # Fallback: UTF-8 byte-level
         encoded = list(text.encode('utf-8'))[:self.config.max_position_embeddings]
         return torch.tensor([encoded], dtype=torch.long).to(self.device)
     
     def _detokenize(self, token_ids: list) -> str:
         """Convert token IDs back to text."""
+        if self._tokenizer is not None:
+            return self._tokenizer.decode(token_ids, skip_special_tokens=True)
         try:
             return bytes(token_ids).decode('utf-8', errors='replace')
         except Exception:

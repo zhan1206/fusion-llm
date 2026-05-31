@@ -439,60 +439,205 @@ class GRPOTrainer:
             **kwargs,
         )
         
-        # 解码
-        texts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        # Decode
+        if hasattr(self, 'tokenizer') and self.tokenizer is not None:
+            texts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        else:
+            texts = [f"[generated_ids shape: {outputs.shape}]" for _ in outputs]
         
         return texts
     
+    def _normalize_logits_to_log_probs(self, logits: torch.Tensor, labels: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Extract per-sequence log probabilities from logits.
+        
+        For GRPO, we need the log prob of the full generated sequence,
+        not just the last token. This properly shifts logits and sums.
+        """
+        if labels is not None:
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = labels[:, 1:].contiguous()
+            log_probs = F.log_softmax(shift_logits, dim=-1)
+            per_token = log_probs.gather(2, shift_labels.unsqueeze(2)).squeeze(2)
+            mask = (shift_labels != 0).float()
+            return (per_token * mask).sum(dim=1)
+        return torch.log_softmax(logits[:, -1, :], dim=-1).sum(dim=-1)
+
+    def compute_reward(
+        self,
+        prompt: str,
+        response: str,
+        reward_fn=None,
+    ) -> float:
+        """
+        Compute reward for a generated response.
+        
+        Built-in reward heuristics (used when reward_fn is None):
+        1. Length reward: prefer moderate length (not too short, not too long)
+        2. Coherence reward: penalize excessive repetition
+        3. Format reward: bonus for structured output (numbered lists, code blocks)
+        
+        Args:
+            prompt: Input prompt text
+            response: Generated response text
+            reward_fn: Optional custom reward function(prompt, response) -> float
+            
+        Returns:
+            Reward score (float)
+        """
+        if reward_fn is not None:
+            return reward_fn(prompt, response)
+        
+        score = 0.0
+        
+        # 1. Length reward (optimal: 50-500 chars)
+        resp_len = len(response.strip())
+        if resp_len > 20:
+            if resp_len < 50:
+                score += 0.3
+            elif resp_len < 200:
+                score += 0.7
+            elif resp_len < 500:
+                score += 0.5
+            else:
+                score += 0.2
+        else:
+            score -= 0.5
+        
+        # 2. Repetition penalty
+        words = response.split()
+        if len(words) > 1:
+            bigrams = list(zip(words[:-1], words[1:]))
+            bigram_set = set(bigrams)
+            repetition_ratio = 1.0 - (len(bigram_set) / max(len(words) - 1, 1))
+            score -= repetition_ratio * 0.3
+        
+        # 3. Format reward
+        if "```" in response:
+            score += 0.2
+        if any(f"{i}." in response for i in range(1, 6)):
+            score += 0.1
+        
+        return score
+
+    def generate_samples(
+        self,
+        input_ids: torch.Tensor,
+        num_samples: int = 4,
+        thinking_depth: int = 0,
+        max_new_tokens: int = 256,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+    ) -> Tuple[torch.Tensor, List[str]]:
+        """
+        Generate multiple samples from the same input for GRPO.
+        
+        Args:
+            input_ids: (batch, seq_len) input tokens
+            num_samples: Number of responses per input
+            thinking_depth: Thinking Dial depth (0-3)
+            max_new_tokens: Max tokens to generate
+            temperature: Sampling temperature
+            top_p: Nucleus sampling threshold
+            
+        Returns:
+            Tuple of (all_generated_ids, decoded_texts)
+        """
+        all_ids = []
+        all_texts = []
+        
+        for _ in range(num_samples):
+            outputs = self.model.generate(
+                input_ids=input_ids,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                do_sample=True,
+                pad_token_id=self.model.config.pad_token_id or 0,
+                eos_token_id=self.model.config.eos_token_id or 1,
+            )
+            all_ids.append(outputs)
+            
+            if hasattr(self, 'tokenizer') and self.tokenizer is not None:
+                texts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+                all_texts.extend(texts)
+        
+        return torch.cat(all_ids, dim=0), all_texts
+
     def train_step(
         self,
         input_ids: torch.Tensor,
-        rewards: torch.Tensor,
-        old_log_probs: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        reward_fn=None,
     ) -> Dict[str, float]:
         """
-        执行一步 GRPO 训练
+        Execute one GRPO training step with multi-sample generation.
         
-        参数：
-            input_ids: 输入 token IDs
-            rewards: 奖励信号
-            old_log_probs: 旧策略的 log 概率
+        Real GRPO loop:
+        1. Generate N samples per input
+        2. Compute rewards for each sample (built-in heuristics or custom)
+        3. Compute group-relative advantages
+        4. Policy gradient update with KL constraint
+        
+        Args:
+            input_ids: Input token IDs
+            labels: Optional labels for log prob computation
+            reward_fn: Optional custom reward function(prompt, response) -> float
             
-        返回：
-            训练统计字典
+        Returns:
+            Training statistics
         """
         self.model.train()
         
         if self.optimizer is None:
             self.setup_optimizer()
         
-        # 计算优势
-        advantages = self.compute_advantages(rewards)
+        device = input_ids.device
+        num_samples = self.grpo_config.grpo_sample_size
         
-        # 前向传播获取 log_probs
-        outputs = self.model(input_ids=input_ids)
+        # Step 1: Generate multiple samples per input
+        generated_ids, generated_texts = self.generate_samples(
+            input_ids, num_samples=num_samples,
+        )
+        
+        # Step 2: Compute rewards
+        rewards_list = []
+        for i, text in enumerate(generated_texts):
+            prompt_idx = i // num_samples
+            prompt_text = ""
+            if hasattr(self, 'tokenizer') and self.tokenizer is not None:
+                prompt_text = self.tokenizer.decode(input_ids[prompt_idx], skip_special_tokens=True)
+            reward = self.compute_reward(prompt_text, text, reward_fn)
+            rewards_list.append(reward)
+        
+        rewards = torch.tensor(rewards_list, dtype=torch.float32, device=device)
+        
+        # Step 3: Compute group-relative advantages
+        advantages = self.compute_advantages(rewards, sample_size=num_samples)
+        
+        # Step 4: Get log probs and compute GRPO loss
+        outputs = self.model(input_ids=generated_ids)
         logits = outputs.logits
         
-        # 计算 log_probs（简化版：使用最后一层的 log_softmax）
-        log_probs = torch.log_softmax(logits[:, -1, :], dim=-1)
+        use_labels = labels.repeat_interleave(num_samples, dim=0) if labels is not None else generated_ids
+        log_probs = self._normalize_logits_to_log_probs(logits, use_labels)
         
-        # 计算 GRPO 损失
-        loss = self.compute_grpo_loss(log_probs, advantages, old_log_probs)
+        loss = self.compute_grpo_loss(log_probs, advantages)
         
-        # 反向传播
+        # Backward
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
         
-        # 更新统计
+        # Stats
         self.step_count += 1
         self.loss_history.append(loss.item())
         
         return {
-            "loss": loss.item(),
-            "mean_reward": rewards.mean().item(),
-            "mean_advantage": advantages.mean().item(),
+            'loss': loss.item(),
+            'mean_reward': rewards.mean().item(),
+            'std_reward': rewards.std().item() if len(rewards) > 1 else 0.0,
+            'step': self.step_count,
         }
     
     def train_step_with_labels(
