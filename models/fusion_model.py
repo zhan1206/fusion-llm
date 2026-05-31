@@ -41,6 +41,7 @@ import torch.nn.functional as F
 from transformers import PretrainedConfig, PreTrainedModel, GenerationMixin
 from typing import Optional, Tuple, Dict, Any
 import math
+from models.sbla_attention import SBLAttention
 
 
 class FusionConfig(PretrainedConfig):
@@ -118,12 +119,12 @@ class RMSNorm(nn.Module):
 
 class FusionAttention(nn.Module):
     """
-    Fusion Attention Layer with integrated SBLA.
+    Fusion Attention Layer — delegates to the canonical SBLAttention implementation.
     
-    NOTE (M4): This is a standalone reimplementation. The canonical SBLA logic
-    lives in sbla_attention.py (SBLAttention class). Future work should unify
-    by having FusionAttention delegate to SBLAttention instead of duplicating
-    mask building and block latent computation logic.
+    This is the unified entry point for attention in FusionModel.
+    All SBLA logic (block latents, causal/window masks, padding) lives in
+    models/sbla_attention.py::SBLAttention. This wrapper adds KV cache support
+    and config-driven mode selection (pure_sbla / hybrid).
     
     See: models/sbla_attention.py::SBLAttention
     """
@@ -131,95 +132,16 @@ class FusionAttention(nn.Module):
     def __init__(self, config: FusionConfig):
         super().__init__()
         
-        self.hidden_size = config.hidden_size
-        self.num_heads = config.num_attention_heads
-        self.head_dim = config.hidden_size // config.num_attention_heads
-        self.block_size = config.block_size
-        self.latent_dim = config.latent_dim
-        
-        # Q/K/V 投影
-        self.q_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        self.k_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        self.v_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        self.out_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        
-        # SBLA 潜向量投影
-        self.latent_q = nn.Linear(config.hidden_size, config.latent_dim, bias=False)
-        self.latent_k = nn.Linear(config.hidden_size, config.latent_dim, bias=False)
-        self.latent_v = nn.Linear(config.hidden_size, config.latent_dim, bias=False)
-        self.latent_out = nn.Linear(config.latent_dim, config.hidden_size, bias=False)
-        
-        # 位置编码（用于潜向量）
-        self.block_pos = nn.Parameter(torch.randn(1, 1000, config.latent_dim) * 0.02)
-        
-        # LayerNorm
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
-        
-        # Dropout
-        self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
-        
-        # 门控
-        self.gate = nn.Parameter(torch.tensor(0.1))
-        
-    def _build_causal_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        mask = torch.triu(
-            torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
-            diagonal=1,
+        mode = getattr(config, 'sbla_mode', 'hybrid')
+        self.sbla = SBLAttention(
+            hidden_size=config.hidden_size,
+            num_heads=config.num_attention_heads,
+            block_size=config.block_size,
+            latent_dim=config.latent_dim,
+            dropout=config.attention_probs_dropout_prob,
+            window_size=config.block_size,  # window = block_size by default
+            mode=mode,
         )
-        return mask.float().masked_fill(mask, float('-inf'))
-    
-    def _build_window_mask(self, seq_len: int, window_size: int, device: torch.device) -> torch.Tensor:
-        positions = torch.arange(seq_len, device=device).float()
-        distance = torch.abs(positions.unsqueeze(0) - positions.unsqueeze(1))
-        mask = (distance > window_size).float()
-        return mask.masked_fill(mask.bool(), float('-inf'))
-    
-    def _compute_block_latents(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
-        batch_size, seq_len, d_model = hidden_states.shape
-        device = hidden_states.device
-        num_blocks = math.ceil(seq_len / self.block_size)
-        padded_len = num_blocks * self.block_size
-        
-        # Padding
-        if padded_len > seq_len:
-            pad_len = padded_len - seq_len
-            hidden_padded = F.pad(hidden_states, (0, 0, 0, pad_len))
-        else:
-            hidden_padded = hidden_states
-        
-        # 重塑为 (batch, num_blocks, block_size, d_model)
-        blocks = hidden_padded.view(batch_size, num_blocks, self.block_size, d_model)
-        
-        # 加权池化
-        if attention_mask is not None and padded_len > seq_len:
-            mask_1d = attention_mask.squeeze(1).squeeze(1)
-            if padded_len > seq_len:
-                mask_1d = F.pad(mask_1d, (0, pad_len), value=0.0)
-            mask_3d = mask_1d.view(batch_size, num_blocks, self.block_size)
-            real_sizes = (mask_3d > 0.5).float().sum(dim=-1)
-            weights = mask_3d.float().unsqueeze(-1)
-            denom = real_sizes.view(batch_size, num_blocks, 1).clamp(min=1)
-            weights = weights / (denom + 1e-8)
-        else:
-            real_sizes = torch.full((batch_size, num_blocks), self.block_size, device=device)
-            weights = torch.full((batch_size, num_blocks, self.block_size, 1), 1.0 / self.block_size, device=device)
-        
-        block_sum = (blocks * weights).sum(dim=2)
-        
-        # 投影到潜空间
-        blk_q = self.latent_q(block_sum)
-        blk_k = self.latent_k(block_sum)
-        blk_v = self.latent_v(block_sum)
-        
-        # 添加位置编码
-        max_blocks = min(num_blocks, self.block_pos.size(1))
-        blk_k = blk_k + self.block_pos[:, :max_blocks, :].to(blk_k.device)
-        
-        return blk_q, blk_k, blk_v, num_blocks
     
     def forward(
         self,
@@ -228,68 +150,25 @@ class FusionAttention(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        batch_size, seq_len, _ = hidden_states.shape
-        device = hidden_states.device
+        # Delegate to SBLAttention
+        output = self.sbla(hidden_states, attention_mask)
         
-        # Q/K/V 投影
-        Q = self.q_proj(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        K = self.k_proj(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        V = self.v_proj(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        # KV Cache: extract from SBLA's Q/K projections for cache reuse
+        present_key_value = None
+        if use_cache:
+            batch_size, seq_len, _ = hidden_states.shape
+            K = self.sbla.k_proj(hidden_states)
+            V = self.sbla.v_proj(hidden_states)
+            num_heads = self.sbla.num_heads
+            head_dim = self.sbla.head_dim
+            K = K.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+            V = V.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+            if past_key_value is not None:
+                K = torch.cat([past_key_value[0], K], dim=2)
+                V = torch.cat([past_key_value[1], V], dim=2)
+            present_key_value = (K, V)
         
-        # KV Cache 逻辑
-        if past_key_value is not None:
-            past_k, past_v = past_key_value
-            K = torch.cat([past_k, K], dim=2)
-            V = torch.cat([past_v, V], dim=2)
-        
-        present_key_value = (K, V) if use_cache else None
-        
-        # 构建注意力掩码
-        causal_mask = self._build_causal_mask(seq_len, device)
-        window_mask = self._build_window_mask(seq_len, self.block_size, device)
-        combined_mask = (causal_mask + window_mask).unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, seq_len)
-        combined_mask = combined_mask.expand(batch_size, 1, seq_len, seq_len)  # 扩展批次维度
-        
-        # 扩展 attention_mask 并应用
-        if attention_mask is not None:
-            # attention_mask: (batch, seq_len) -> (batch, 1, 1, seq_len)
-            if attention_mask.dim() == 2:
-                mask_4d = attention_mask.unsqueeze(1).unsqueeze(2)  # (batch, 1, 1, seq_len)
-            else:
-                mask_4d = attention_mask  # 已经是 4D
-            padding_mask = (1.0 - mask_4d) * float('-inf')  # (batch, 1, 1, seq_len)
-            # 使用 maximum 避免 -inf + -inf = NaN
-            combined_mask = torch.maximum(combined_mask, padding_mask)  # (batch, 1, seq_len, seq_len)
-        
-        # 注意力
-        attn_scores = torch.matmul(Q, K.transpose(-1, -2)) / math.sqrt(self.head_dim)
-        attn_scores = attn_scores + combined_mask
-        attn_probs = F.softmax(attn_scores, dim=-1)
-        attn_probs = self.dropout(attn_probs)
-        context = torch.matmul(attn_probs, V)
-        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
-        output_std = self.out_proj(context)
-        
-        # SBLA 跨块关联（使用 repeat_interleave）
-        blk_q, blk_k, blk_v, num_blocks = self._compute_block_latents(hidden_states, attention_mask)
-        latent_mask = self._build_causal_mask(num_blocks, device).unsqueeze(0)
-        latent_scores = torch.matmul(blk_q, blk_k.transpose(-1, -2)) / math.sqrt(self.latent_dim)
-        latent_scores = latent_scores + latent_mask
-        latent_probs = F.softmax(latent_scores, dim=-1)
-        latent_context = torch.matmul(latent_probs, blk_v)
-        latent_output = self.latent_out(latent_context)
-        
-        # 将块级潜向量扩展到序列级（repeat_interleave 避免形状不匹配）
-        # latent_output: (batch, num_blocks, hidden_size)
-        # repeat_interleave: 每行重复 block_size 次 -> (batch, num_blocks*block_size, hidden_size)
-        latent_expanded = latent_output.repeat_interleave(self.block_size, dim=1)[:, :seq_len, :]
-        
-        # 门控合并
-        gate_value = torch.sigmoid(self.gate)
-        output = output_std + gate_value * latent_expanded
-        
-        output = self.LayerNorm(output)
-        return self.dropout(output), present_key_value
+        return output, present_key_value
 
 
 class FusionLayer(nn.Module):
