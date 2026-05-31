@@ -1,4 +1,4 @@
-# Fusion - 六边形开源大模型
+﻿# Fusion - 六边形开源大模型
 
 **集百家之长，铸六边形开源大模型**
 
@@ -180,7 +180,7 @@ Fusion 项目受到以下开源项目的启发：
 
 ## 📧 联系方式
 
-- 项目作者：朱子瞻
+- 项目作者：zhan1206
 - GitHub：[@zhan1206](https://github.com/zhan1206)
 - 问题反馈：[Issues](https://github.com/zhan1206/fusion-llm/issues)
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 SBLA (Sparse Block Latent Attention) 真实实现
 
 替换标准注意力，提升长文本召回 20%、推理速度 15%。
@@ -28,7 +28,7 @@ SBLA (Sparse Block Latent Attention) 真实实现
     
     output = attention(hidden_states, attention_mask)
 
-作者：朱子瞻
+作者：zhan1206
 项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """

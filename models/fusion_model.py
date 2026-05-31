@@ -1,4 +1,4 @@
-"""
+﻿"""
 Fusion 完整模型定义（v2 - 可实例化可运行）
 
 集成：
@@ -30,7 +30,7 @@ Fusion 完整模型定义（v2 - 可实例化可运行）
     outputs = model(input_ids=input_ids, labels=input_ids)
     print(f"Loss: {outputs['loss'].item()}")
 
-作者：朱子瞻
+作者：zhan1206
 项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """

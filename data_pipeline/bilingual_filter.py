@@ -1,4 +1,4 @@
-"""
+﻿"""
 Fusion 数据管道：双母语清洗管道（Bi-Lingual TrueFilter）
 
 核心功能：
@@ -16,7 +16,7 @@ Fusion 数据管道：双母语清洗管道（Bi-Lingual TrueFilter）
     filter_en = BilingualTrueFilter(lang="en")
     clean_data_en = filter_en.process(raw_english_data)
 
-作者：朱子瞻
+作者：zhan1206
 项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """

@@ -1,6 +1,6 @@
-import codecs
+﻿import codecs
 
-filepath = 'C:/Users/朱子瞻/.qclaw/workspace/fusion-llm/models/thinking_dial.py'
+filepath = 'C:/Users/zhan1206/.qclaw/workspace/fusion-llm/models/thinking_dial.py'
 with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
     content = f.read()
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Thinking Dial（动态推理强度控制）- 真实实现
 
 核心功能：
@@ -28,7 +28,7 @@ Thinking Dial（动态推理强度控制）- 真实实现
         thinking_depth=2,  # 0-3
     )
 
-作者：朱子瞻
+作者：zhan1206
 项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """

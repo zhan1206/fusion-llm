@@ -1,4 +1,4 @@
-"""
+﻿"""
 Fusion 推理部署：Ollama 一键部署工具
 
 功能：
@@ -14,7 +14,7 @@ Fusion 推理部署：Ollama 一键部署工具
     - 安装 llama.cpp（用于转换）
     - 安装 Ollama（https://ollama.com）
 
-作者：朱子瞻
+作者：zhan1206
 项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """

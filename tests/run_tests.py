@@ -1,4 +1,4 @@
-"""
+﻿"""
 Fusion 项目测试脚本
 
 运行所有单元测试，确保代码质量
@@ -8,7 +8,7 @@ Fusion 项目测试脚本
     或
     python tests/run_tests.py
 
-作者：朱子瞻
+作者：zhan1206
 项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """

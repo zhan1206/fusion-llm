@@ -1,4 +1,4 @@
-"""
+﻿"""
 Fusion 模型全参数微调脚本
 
 支持：
@@ -15,7 +15,7 @@ Fusion 模型全参数微调脚本
     # 8B 模型 + DeepSpeed ZeRO-3
     deepspeed train/full_finetune.py --local_model --model_size 8B --deepspeed configs/ds_zero3.json --data_path data/example_data.json
 
-作者：朱子瞻
+作者：zhan1206
 项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """

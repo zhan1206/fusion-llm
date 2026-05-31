@@ -1,4 +1,4 @@
-"""
+﻿"""
 Fusion Ollama deployment tool (v2 - fixed)
 
 Features:
@@ -16,7 +16,7 @@ Requirements:
     - llama.cpp (auto-detected or set LLAMA_CPP_DIR)
     - Ollama (https://ollama.com)
 
-Author: 朱子瞻 (Zhu Zizhan)
+Author: zhan1206
 Project: Fusion - Hexagonal Open-source LLM
 License: Apache 2.0
 """

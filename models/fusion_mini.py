@@ -1,4 +1,4 @@
-"""
+﻿"""
 Fusion Mini - 可运行的最小化模型
 
 这是一个简化但**完整可运行**的 Fusion 模型实现，用于验证整个流程。
@@ -30,7 +30,7 @@ Fusion Mini - 可运行的最小化模型
     generated = model.generate(input_ids[:, :10], max_new_tokens=20)
     print(f"Generated shape: {generated.shape}")
 
-作者：朱子瞻
+作者：zhan1206
 项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """

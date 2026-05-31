@@ -1,4 +1,4 @@
-"""
+﻿"""
 T-KD 蒸馏训练脚本
 
 真实的蒸馏训练逻辑：
@@ -14,7 +14,7 @@ T-KD 蒸馏训练脚本
         --train_data "data/t_kd_corpus.jsonl" \
         --output_dir "./output/fusion-mini-distilled"
 
-作者：朱子瞻
+作者：zhan1206
 项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """

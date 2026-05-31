@@ -1,4 +1,4 @@
-"""
+﻿"""
 T-KD 教科书级知识蒸馏管道
 
 使用开源教师模型（Qwen、DeepSeek等）对高信誉源（维基、教科书、学术论文）进行改写，
@@ -11,7 +11,7 @@ T-KD 教科书级知识蒸馏管道
         --output_path "data/t_kd_corpus.jsonl" \
         --num_samples 10000
 
-作者：朱子瞻
+作者：zhan1206
 项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """

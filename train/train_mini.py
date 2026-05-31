@@ -1,4 +1,4 @@
-"""
+﻿"""
 Fusion Mini 训练脚本（可运行版本）
 
 训练 fusion_mini 模型（极简版本，用于验证完整流程）
@@ -15,7 +15,7 @@ Fusion Mini 训练脚本（可运行版本）
         --batch_size 2 \
         --learning_rate 5e-4
 
-作者：朱子瞻
+作者：zhan1206
 项目：Fusion - 六边形开源大模型
 许可证：Apache 2.0
 """
