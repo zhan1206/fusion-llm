@@ -9,7 +9,7 @@ Usage:
     tokenizer = get_tokenizer("gpt2")  # placeholder
     tokenizer = get_tokenizer("fusion", vocab_size=100000)  # future: SentencePiece
 
-Author: Zhu Zizhan
+Author: zhan1206
 Project: Fusion-LLM
 License: Apache 2.0
 """

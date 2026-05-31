@@ -67,6 +67,8 @@ def train_tokenizer(input_path: str, vocab_size: int, output_dir: str, model_typ
         byte_fallback=True,  # Important for multilingual
         split_by_unicode_script=True,
         allow_whitespace_only_pieces=True,
+        normalization_rule_name='identity',  # Avoid nmt_nfkc precompiled charsmap issues
+
     )
 
     model_path = os.path.join(output_dir, "tokenizer.model")
