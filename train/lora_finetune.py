@@ -196,25 +196,22 @@ def create_local_model(
 
 def create_tokenizer(vocab_size: int = 32000):
     """
-    创建与模型 vocab_size 匹配的 tokenizer
-    
-    使用 GPT2Tokenizer 作为基础，resize 到匹配的 vocab 大小
+    Create tokenizer matching model vocab_size.
+    Uses unified tokenizer module with SentencePiece if available, falls back to GPT2.
     """
-    logger.info(f"[create_tokenizer] 创建 tokenizer（vocab_size={vocab_size}）")
+    logger.info(f"[create_tokenizer] Creating tokenizer (vocab_size={vocab_size})")
     
-    # 使用 GPT2 tokenizer 作为基础
+    try:
+        from models.tokenizer import get_tokenizer
+        tokenizer = get_tokenizer("fusion", vocab_size=vocab_size)
+        return tokenizer
+    except Exception as e:
+        logger.warning(f"Fusion tokenizer failed ({e}), falling back to GPT2")
+    
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
-    
-    # 如果 vocab_size 与 GPT2 不同，调整 embedding 层
-    if vocab_size != tokenizer.vocab_size:
-        logger.info(f"[create_tokenizer] 调整词表大小：{tokenizer.vocab_size} -> {vocab_size}")
-        model_torch_dtype = torch.bfloat16
-        # 获取模型的 embedding 层（在 create_local_model 中创建）
-        # 这里先 resize tokenizer，实际 embedding 在模型中也会自动处理
-        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-    
     return tokenizer
+
 
 
 def apply_lora(
@@ -343,7 +340,7 @@ def main():
     parser.add_argument("--model_size", type=str, default="1.5B",
                         choices=["0.5B", "1.5B", "8B", "14B"],
                         help="模型大小（0.5B/1.5B/8B/14B）")
-    parser.add_argument("--local_model", action="store_true", default=True",
+    parser.add_argument("--local_model", action="store_true", default=True,
                         help="使用本地 FusionModel（默认，无需预训练权重）")
     parser.add_argument("--quantize", action="store_true",
                         help="是否使用量化（QLoRA）")

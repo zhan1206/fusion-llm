@@ -158,12 +158,9 @@ def create_local_model(
     return model, config
 
 
-def create_tokenizer(tokenizer_type: str = "gpt2", vocab_size: int = 32000):
+def create_tokenizer(tokenizer_type: str = "fusion", vocab_size: int = 32000):
     """
     Create tokenizer using the unified tokenizer module.
-    
-    Note: Currently uses GPT2 as placeholder until SentencePiece model is trained.
-    The model config vocab_size will be auto-adjusted to match.
     """
     effective_vocab = get_effective_vocab_size(tokenizer_type, vocab_size)
     logger.info(f"[create_tokenizer] Creating tokenizer: type={tokenizer_type}, effective_vocab={effective_vocab}")

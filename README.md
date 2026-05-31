@@ -79,7 +79,7 @@ python train/full_finetune.py --model_size 8B
 ```python
 from models.fusion_model import FusionModel, FusionConfig
 
-config = FusionConfig(vocab_size=10000, hidden_size=256, num_layers=2)
+config = FusionConfig(vocab_size=10000, hidden_size=256, num_hidden_layers=2)
 model = FusionModel(config)
 model.eval()
 

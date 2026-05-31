@@ -266,8 +266,8 @@ TEMPLATE \"\"\"{{{{ if .System }}}}<|im_start|>system
     if thinking_dial:
         content += f"""
 # Thinking Dial examples (injected during training)
-# <|think| depth=0|> Simple question, direct answer
-# <|think| depth=3|> Complex question, detailed reasoning
+# <|think_depth_0|> Simple question, direct answer
+# <|think_depth_3|> Complex question, detailed reasoning
 """
     
     # Write file
@@ -416,16 +416,16 @@ Fusion supports dynamic reasoning intensity control. Add control token before qu
 
 ```bash
 # depth=0: direct answer (casual chat, translation)
-> <|think| depth=0|> How's the weather today?
+> <|think_depth_0|> How's the weather today?
 
 # depth=1: simple reasoning
-> <|think| depth=1|> Calculate 123 * 456
+> <|think_depth_1|> Calculate 123 * 456
 
 # depth=2: medium reasoning
-> <|think| depth=2|> Prove Pythagorean theorem
+> <|think_depth_2|> Prove Pythagorean theorem
 
 # depth=3: deep reasoning (chain-of-thought)
-> <|think| depth=3|> Solve this algorithm problem: ...
+> <|think_depth_3|> Solve this algorithm problem: ...
 ```
 
 ## 3. REST API
@@ -460,7 +460,7 @@ print(response["response"])
 # With Thinking Dial
 response = ollama.generate(
     model="{model_name}",
-    prompt="<|think| depth=2|> Prove Pythagorean theorem",
+    prompt="<|think_depth_2|> Prove Pythagorean theorem",
 )
 
 print(response["response"])

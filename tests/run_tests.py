@@ -87,7 +87,7 @@ class TestThinkingDial(unittest.TestCase):
         
         # 测试解析
         depth, clean = processor.parse_thinking_depth(
-            "<|think| depth=2|> 证明勾股定理"
+            "<|think_depth_2|> 证明勾股定理"
         )
         
         self.assertEqual(depth, 2)
@@ -109,7 +109,7 @@ class TestThinkingDial(unittest.TestCase):
             depth=1,
         )
         
-        self.assertIn("<|think| depth=1|>", result)
+        self.assertIn("<|think_depth_1|>", result)
         print("✅ Thinking Dial 注入测试通过")
 
 

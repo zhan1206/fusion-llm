@@ -45,9 +45,9 @@ from transformers import PreTrainedModel, GenerationMixin
 # 特殊 Token 定义
 # ============================================================
 
-THINK_START = "<|think|"
+THINK_START = "<|think_depth_"
 THINK_END = "|>"
-THINK_DEPTH_PATTERN = re.compile(r"<\|think\| depth=(\d+)\|>")
+THINK_DEPTH_PATTERN = re.compile(r"<\|think_depth_(\d+)\|>")
 
 # Depth 0-3 的描述
 THINK_DEPTH_DESCRIPTIONS = {
@@ -71,7 +71,7 @@ def build_think_token(depth: int) -> str:
     if not 0 <= depth <= 3:
         raise ValueError(f"depth 必须在 0-3 之间，当前值：{depth}")
     
-    return f"{THINK_START} depth={depth}{THINK_END}"
+    return f"{THINK_START}{depth}{THINK_END}"
 
 
 def parse_think_token(text: str) -> Optional[int]:

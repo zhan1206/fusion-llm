@@ -78,7 +78,7 @@ class DPOTrainer:
         """Get tokenizer with fallback to character-level encoding."""
         try:
             from models.tokenizer import get_tokenizer
-            return get_tokenizer("gpt2")
+            return get_tokenizer("fusion")
         except Exception:
             return None
     

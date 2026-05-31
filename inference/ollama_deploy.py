@@ -181,8 +181,8 @@ TEMPLATE \"\"\"{{ if .System }}<|im_start|>system
     if thinking_dial:
         content += f"""
 # Thinking Dial 示例（训练时注入）
-# <|think| depth=0|> 简单问题，直接回答
-# <|think| depth=3|> 复杂问题，详细推理
+# <|think_depth_0|> 简单问题，直接回答
+# <|think_depth_3|> 复杂问题，详细推理
 """
     
     # 写入文件
@@ -319,16 +319,16 @@ Fusion 支持动态推理强度控制。在问题前添加控制 token：
 
 ```bash
 # depth=0：直接回答（闲聊、翻译）
-> <|think| depth=0|> 今天天气怎么样？
+> <|think_depth_0|> 今天天气怎么样？
 
 # depth=1：简单推理
-> <|think| depth=1|> 计算 123 * 456
+> <|think_depth_1|> 计算 123 * 456
 
 # depth=2：中等推理
-> <|think| depth=2|> 证明勾股定理
+> <|think_depth_2|> 证明勾股定理
 
 # depth=3：深度推理（思维链）
-> <|think| depth=3|> 解决这个算法问题：...
+> <|think_depth_3|> 解决这个算法问题：...
 ```
 
 ## 3. REST API
@@ -363,7 +363,7 @@ print(response["response"])
 # 带 Thinking Dial
 response = ollama.generate(
     model="{model_name}",
-    prompt="<|think| depth=2|> 证明勾股定理",
+    prompt="<|think_depth_2|> 证明勾股定理",
 )
 
 print(response["response"])

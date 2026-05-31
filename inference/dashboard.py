@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Fusion Inference Dashboard - Interactive inference control panel
 
@@ -128,7 +128,7 @@ class InferenceEngine:
         if hasattr(self.model.config, 'enable_thinking_dial') and self.model.config.enable_thinking_dial:
             try:
                 from models.thinking_dial import ThinkingDialProcessor
-                processor = ThinkingDialProcessor(self._tokenizer or get_tokenizer("gpt2"))
+                processor = ThinkingDialProcessor(self._tokenizer or get_tokenizer("fusion"))
                 self._thinking_depth_token = processor.get_think_token(rank)
             except Exception:
                 pass
@@ -138,7 +138,7 @@ class InferenceEngine:
     
         try:
             from models.tokenizer import get_tokenizer
-            self._tokenizer = get_tokenizer("gpt2")
+            self._tokenizer = get_tokenizer("fusion")
             print(f"Tokenizer loaded: vocab_size={self._tokenizer.vocab_size}")
         except Exception:
             self._tokenizer = None

@@ -36,6 +36,18 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from models.fusion_mini import FusionMini, FusionMiniConfig
+from models.tokenizer import get_tokenizer
+
+
+def _try_get_tokenizer():
+    """Try to load Fusion tokenizer, return None on failure."""
+    try:
+        tok = get_tokenizer("fusion")
+        if tok is not None:
+            print(f"   [Tokenizer] Loaded Fusion tokenizer, vocab_size={len(tok)}")
+        return tok
+    except Exception:
+        return None
 
 
 class MiniDataset(Dataset):
@@ -164,9 +176,14 @@ def train_mini_model(
     
     # 2. 加载数据集
     print(f"\n[数据] 加载数据集...")
+    tok = _try_get_tokenizer()
+    if tok is not None:
+        vocab_size = len(tok)
+    else:
+        vocab_size = 1000
     dataset = MiniDataset(
         data_path=data_path,
-        tokenizer=None,  # 使用字符级编码
+        tokenizer=tok,  # Use fusion tokenizer if available, else char-level
         max_length=max_length,
     )
     
@@ -179,7 +196,7 @@ def train_mini_model(
     # 3. 创建模型配置
     print(f"\n[模型] 创建模型...")
     config = FusionMiniConfig(
-        vocab_size=1000,  # 字符级，实际会根据数据调整
+        vocab_size=vocab_size,
         hidden_size=hidden_size,
         num_hidden_layers=num_hidden_layers,
         num_attention_heads=4,
@@ -187,8 +204,9 @@ def train_mini_model(
         max_position_embeddings=max_length,
     )
     
-    # 调整词表大小（根据数据）
-    config.vocab_size = len(dataset.char_to_idx) + 10  # 加点余量
+    # If char-level tokenizer, adjust vocab_size from data
+    if tok is None and hasattr(dataset, 'char_to_idx'):
+        config.vocab_size = len(dataset.char_to_idx) + 10
     
     print(f"   词表大小：{config.vocab_size}")
     print(f"   隐层大小：{config.hidden_size}")
