@@ -24,7 +24,9 @@ def export_to_ggml(model, tokenizer, output_path, vocab_size=32000):
         output_path: 输出路径（.ggml 文件）
         vocab_size: 词汇表大小
     """
-    print("[EXPORT] 导出模型到 GGML 格式（简化版）...")
+    # TODO: This is a simplified/stub export. For production use,
+    # use llama.cpp's convert.py and quantize tools instead.
+    print("[EXPORT] 导出模型到 GGML 格式（简化版 - 仅保存配置，非可用 GGML 权重）...")
     
     # 获取模型配置
     if hasattr(model.config, 'vocab_size'):

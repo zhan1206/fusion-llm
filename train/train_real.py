@@ -110,8 +110,13 @@ def train_real():
             else:
                 encoded = encoded + [0] * (seq_len - len(encoded))
             
-            batch_input.append(encoded[:-1])  # 输入：除最后一个 token
-            batch_labels.append(encoded[1:])  # 标签：除第一个 token
+            # M4-M5 FIX: Do NOT pre-shift labels here.
+            # The model's forward() already applies the shift internally:
+            #   shift_logits = logits[..., :-1, :]
+            #   shift_labels = labels[..., 1:]
+            # Pre-shifting here would cause a double-shift bug.
+            batch_input.append(encoded)   # Full sequence as input
+            batch_labels.append(encoded)  # Full sequence as labels (model handles shift)
         
         input_ids = torch.tensor(batch_input)
         labels = torch.tensor(batch_labels)

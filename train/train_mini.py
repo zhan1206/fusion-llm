@@ -156,6 +156,17 @@ def train_mini_model(
         max_length: 最大序列长度
         device: 设备
     """
+    # Set deterministic seeds for reproducibility
+    import random
+    import numpy as np
+    random.seed(42)
+    np.random.seed(42)
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     print("=" * 60)
     print("Fusion Mini 训练脚本")
     print("=" * 60)

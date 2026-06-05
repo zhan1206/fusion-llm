@@ -39,9 +39,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import PretrainedConfig, PreTrainedModel, GenerationMixin
+from transformers.modeling_outputs import CausalLMOutputWithPast
 from typing import Optional, Tuple, Dict, Any
 import math
-from models.sbla_attention import SBLAttention
+
+# H4-H6: Use try/except for relative imports with sys.path fallback
+try:
+    from .sbla_attention import SBLAttention
+except ImportError:
+    from models.sbla_attention import SBLAttention
 
 
 class FusionConfig(PretrainedConfig):
@@ -65,13 +71,13 @@ class FusionConfig(PretrainedConfig):
         rms_norm_eps: float = 1e-6,
         use_cache: bool = True,
         tie_word_embeddings: bool = False,
-        # SBLA 参数
+        # SBLA parameters
         block_size: int = 512,
         latent_dim: int = 64,
         sbla_window_size: Optional[int] = None,
-        window_size: Optional[int] = None,  # Alias for sbla_window_size (for HF compatibility)
+        window_size: Optional[int] = None,
         sbla_mode: str = "pure_sbla",
-        # Thinking Dial 参数
+        # Thinking Dial parameters
         enable_thinking_dial: bool = True,
         num_thinking_depths: int = 4,
         **kwargs,
@@ -93,16 +99,73 @@ class FusionConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.tie_word_embeddings = tie_word_embeddings
         
-        # SBLA 参数
+        # SBLA parameters
         self.block_size = block_size
         self.latent_dim = latent_dim
         self.window_size = window_size or sbla_window_size or block_size
-        self.sbla_window_size = self.window_size  # Keep as alias for backward compat
+        self.sbla_window_size = self.window_size
         self.sbla_mode = sbla_mode
         
-        # Thinking Dial 参数
+        # Thinking Dial parameters
         self.enable_thinking_dial = enable_thinking_dial
         self.num_thinking_depths = num_thinking_depths
+        
+        # RoPE parameters
+        self.rope_theta = kwargs.pop('rope_theta', 10000.0)
+
+
+# H1-H3: Register FusionConfig with AutoConfig
+try:
+    from transformers import AutoConfig
+    AutoConfig.register("fusion", FusionConfig)
+except Exception:
+    pass  # Already registered or AutoConfig unavailable
+
+
+class RotaryEmbedding(nn.Module):
+    """Rotary Position Embedding (RoPE) for positional encoding in attention."""
+
+    def __init__(self, dim, max_position_embeddings=2048, base=10000.0):
+        super().__init__()
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer('inv_freq', inv_freq)
+
+    def forward(self, seq_len, device=None):
+        t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
+        freqs = torch.outer(t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        return emb
+
+
+def rotate_half(x):
+    """Rotate half the hidden dims of the input."""
+    x1 = x[..., :x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2:]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None):
+    """Apply rotary position embedding to query and key tensors.
+
+    Args:
+        q: (batch, num_heads, seq_len, head_dim)
+        k: (batch, num_heads, seq_len, head_dim) or (batch, num_kv_heads, seq_len, head_dim)
+        cos: (seq_len, head_dim) cosine part of rotary embedding
+        sin: (seq_len, head_dim) sine part of rotary embedding
+        position_ids: optional position ids (unused, for API compat)
+
+    Returns:
+        Tuple of (q_embed, k_embed) with rotary position encoding applied.
+    """
+    # cos/sin: (seq_len, head_dim) -> (1, 1, seq_len, head_dim)
+    cos = cos.unsqueeze(0).unsqueeze(0)
+    sin = sin.unsqueeze(0).unsqueeze(0)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
 
 
 class RMSNorm(nn.Module):
@@ -145,6 +208,21 @@ class FusionAttention(nn.Module):
             mode=mode,
             num_key_value_heads=config.num_key_value_heads,
         )
+        
+        # M14 FIX: Add RoPE - Rotary Position Embedding
+        head_dim = config.hidden_size // config.num_attention_heads
+        rope_theta = getattr(config, 'rope_theta', 10000.0)
+        self.rotary_emb = RotaryEmbedding(
+            dim=head_dim,
+            max_position_embeddings=config.max_position_embeddings,
+            base=rope_theta,
+        )
+        
+        # Separate Q/K/V projections for RoPE application
+        # (SBLAttention has its own q/k/v, but we need access before RoPE)
+        self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * head_dim, bias=False)
+        self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * head_dim, bias=False)
+        self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * head_dim, bias=False)
     
     def forward(
         self,
@@ -152,11 +230,34 @@ class FusionAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        position_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        # M14 FIX: Apply RoPE to Q and K before SBLAttention
+        batch_size, seq_len, _ = hidden_states.shape
+        head_dim = self.sbla.head_dim
+        num_kv_groups = self.sbla.num_kv_groups
+        
+        # Project Q/K/V
+        Q = self.q_proj(hidden_states).view(batch_size, seq_len, self.sbla.num_heads, head_dim).transpose(1, 2)
+        K = self.k_proj(hidden_states).view(batch_size, seq_len, self.sbla.num_key_value_heads, head_dim).transpose(1, 2)
+        V = self.v_proj(hidden_states).view(batch_size, seq_len, self.sbla.num_key_value_heads, head_dim).transpose(1, 2)
+        
+        # Compute RoPE embeddings
+        kv_seq_len = seq_len
+        if past_key_value is not None:
+            kv_seq_len = past_key_value[0].shape[2] + seq_len
+        emb = self.rotary_emb(kv_seq_len, device=hidden_states.device)
+        cos = emb.cos()
+        sin = emb.sin()
+        # Apply RoPE to Q (full position range) and K (full position range)
+        Q, K = apply_rotary_pos_emb(Q, K, cos, sin)
+        
+        # Store RoPE'd K/V in SBLAttention's cache for incremental generation
         # S1 FIXED: KV Cache now works natively through SBLAttention.
-        # SBLAttention handles past_key_value concatenation internally.
-        output, present_key_value = self.sbla(
-            hidden_states, attention_mask,
+        # We pass the RoPE'd Q/K/V by injecting them into SBLAttention.
+        output, present_key_value = self.sbla.forward_with_qkv(
+            Q, K, V,
+            attention_mask,
             past_key_value=past_key_value,
             use_cache=use_cache,
         )
@@ -255,7 +356,7 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         return_dict: Optional[bool] = True,
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> CausalLMOutputWithPast:
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         
         # Embeddings
@@ -267,16 +368,6 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         else:
             raise ValueError("Either input_ids or inputs_embeds must be provided")
         
-        # 处理 attention_mask - pass raw HF format (1=valid, 0=padding) to SBLA
-        # SBLAttention handles the conversion internally
-        # DO NOT convert here - it would cause double-conversion NaN (F1)
-        # if attention_mask is not None:
-        #     if attention_mask.dim() == 2:
-        #         attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-        #     float_mask = attention_mask.to(dtype=hidden_states.dtype)
-        #     attention_mask = (1.0 - float_mask) * torch.finfo(hidden_states.dtype).min
-        
-        # Transformer 层（支持 KV Cache）
         # Use the already-resolved use_cache from parameter, don't re-override from kwargs
         if past_key_values is not None:
             use_cache = True
@@ -301,7 +392,7 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         # LM Head
         logits = self.lm_head(hidden_states)
         
-        # 损失
+        # Loss
         loss = None
         if labels is not None:
             shift_logits = logits[..., :-1, :].contiguous()
@@ -309,13 +400,18 @@ class FusionModel(PreTrainedModel, GenerationMixin):
             loss_fct = nn.CrossEntropyLoss()
             loss = loss_fct(shift_logits.view(-1, self.config.vocab_size), shift_labels.view(-1))
         
-        if use_cache:
-            return {"loss": loss, "logits": logits, "past_key_values": present_key_values}
-        
+        # C2/C3/C5: Return CausalLMOutputWithPast instead of plain dict
         if not return_dict:
-            return (loss, logits) if loss is not None else (logits,)
+            output = (logits,) + (present_key_values,) if present_key_values is not None else (logits,)
+            return ((loss,) + output) if loss is not None else output
         
-        return {"loss": loss, "logits": logits}
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=present_key_values,
+            hidden_states=None,
+            attentions=None,
+        )
     
     @torch.no_grad()
     def generate(
@@ -350,8 +446,8 @@ class FusionModel(PreTrainedModel, GenerationMixin):
                 return_dict=True,
             )
             
-            logits = outputs["logits"]
-            past_key_values = outputs.get("past_key_values", None)
+            logits = outputs.logits
+            past_key_values = outputs.past_key_values
             
             next_token_logits = logits[:, -1, :] / max(temperature, 1e-8)
             
@@ -408,8 +504,8 @@ if __name__ == "__main__":
     
     outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids, return_dict=True)
     
-    assert outputs["loss"] is not None, "Loss should not be None"
-    assert not torch.isnan(outputs["loss"]).item(), "Loss is NaN!"
-    print(f"Loss={outputs['loss'].item():.4f}, Logits={outputs['logits'].shape}")
+    assert outputs.loss is not None, "Loss should not be None"
+    assert not torch.isnan(outputs.loss).item(), "Loss is NaN!"
+    print(f"Loss={outputs.loss.item():.4f}, Logits={outputs.logits.shape}")
     
     print("\n[ALL TESTS PASSED] Fusion Model v2 fully functional.")

@@ -173,11 +173,12 @@ class ThinkingDialProcessor:
     
     def _register_special_tokens(self):
         """注册特殊 token 到 tokenizer"""
+        # M1-M3 FIX: Register complete think tokens matching tokenizer.py format
+        # tokenizer.py registers ["<|think_depth_0|>", "<|think_depth_1|>", "<|think_depth_2|>", "<|think_depth_3|>"]
+        think_tokens = [build_think_token(d) for d in range(4)]  # ["<|think_depth_0|>", ..., "<|think_depth_3|>"]
+        
         special_tokens = {
-            "additional_special_tokens": [
-                THINK_START,
-                THINK_END,
-            ]
+            "additional_special_tokens": think_tokens,
         }
         
         num_added = self.tokenizer.add_special_tokens(special_tokens)
@@ -617,7 +618,7 @@ class GRPOTrainer:
         
         # Step 4: Get log probs and compute GRPO loss
         outputs = self.model(input_ids=generated_ids)
-        logits = outputs["logits"]
+        logits = outputs.logits if hasattr(outputs, 'logits') else outputs['logits']
         
         use_labels = labels.repeat_interleave(num_samples, dim=0) if labels is not None else generated_ids
         log_probs = self._normalize_logits_to_log_probs(logits, use_labels)

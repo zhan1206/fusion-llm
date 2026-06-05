@@ -35,7 +35,13 @@ import torch.nn.functional as F
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from models.fusion_model import FusionModel, FusionConfig
+# H4-H6: Use try/except for imports with sys.path fallback
+try:
+    from models.fusion_model import FusionModel, FusionConfig
+except ImportError:
+    # Fallback: add project root and retry
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from models.fusion_model import FusionModel, FusionConfig
 
 
 @dataclass

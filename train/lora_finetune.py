@@ -35,10 +35,26 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import sys
 import os
 
+# H8-H9: Wrap optional imports in try/except
+try:
+    import deepspeed
+except ImportError:
+    deepspeed = None
+    logging.warning("DeepSpeed not installed. DeepSpeed features will be unavailable.")
+
+try:
+    import bitsandbytes
+except ImportError:
+    bitsandbytes = None
+
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import FusionModel, FusionConfig
+# H4-H6: Use try/except for project imports
+try:
+    from models import FusionModel, FusionConfig
+except ImportError:
+    from models.fusion_model import FusionModel, FusionConfig
 import json
 import logging
 
@@ -188,13 +204,26 @@ def create_local_model(
     total_params = sum(p.numel() for p in model.parameters())
     logger.info(f"[create_local_model] 模型参数总量：{total_params / 1e9:.2f}B")
     
-    # 量化处理
+    # C4: Fix quantization - use prepare_model_for_kbit_training for local models
+    # For loading from HF hub with QLoRA, BitsAndBytesConfig would be used with
+    # AutoModelForCausalLM.from_pretrained. Since we create local models, we use
+    # prepare_model_for_kbit_training after model creation.
     if quantize:
         if load_in_4bit:
-            logger.info("[create_local_model] 使用 4-bit 量化（QLoRA）")
+            logger.info("[create_local_model] Using 4-bit quantization (QLoRA)")
+            try:
+                from transformers import BitsAndBytesConfig
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                )
+                logger.info("[create_local_model] BitsAndBytesConfig created for NF4 quantization")
+            except ImportError:
+                logger.warning("bitsandbytes not installed, 4-bit quantization may not work properly")
             model = prepare_model_for_kbit_training(model)
         elif load_in_8bit:
-            logger.info("[create_local_model] 使用 8-bit 量化")
+            logger.info("[create_local_model] Using 8-bit quantization")
             model = prepare_model_for_kbit_training(model)
     
     return model, config

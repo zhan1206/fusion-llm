@@ -23,7 +23,9 @@ def export_to_onnx(model, tokenizer, output_path, dummy_input=None):
         output_path: 输出路径（.onnx 文件）
         dummy_input: 虚拟输入（用于导出）
     """
-    print("[EXPORT] 导出模型到 ONNX 格式（简化版）...")
+    # TODO: This is a simplified/stub export. For production use,
+    # use torch.onnx.export() directly with proper opset version.
+    print("[EXPORT] 导出模型到 ONNX 格式（简化版 - 仅保存配置和元数据）...")
     
     # 创建虚拟输入（如果没有提供）
     if dummy_input is None:

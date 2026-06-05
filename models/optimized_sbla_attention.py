@@ -3,7 +3,7 @@
 """
 import sys
 import torch
-import torch.nn as F
+import torch.nn.functional as F
 from pathlib import Path
 from typing import Optional, Tuple
 

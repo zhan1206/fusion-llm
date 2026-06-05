@@ -39,14 +39,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import PretrainedConfig, PreTrainedModel
+from transformers.modeling_outputs import CausalLMOutputWithPast
 from typing import Optional, Tuple
 import math
 import json
 from pathlib import Path
 
-# 导入 SBLA 注意力
-from .sbla_attention import SBLAttention
-from .fusion_model import RMSNorm
+# H4-H6: Use try/except for relative imports with sys.path fallback
+try:
+    from .sbla_attention import SBLAttention
+    from .fusion_model import RMSNorm
+except ImportError:
+    from models.sbla_attention import SBLAttention
+    from models.fusion_model import RMSNorm
 
 
 class FusionMiniConfig(PretrainedConfig):
@@ -104,6 +109,14 @@ class FusionMiniConfig(PretrainedConfig):
             return cls(**config_dict)
         
         raise FileNotFoundError(f"配置文件未找到：{config_file}")
+
+
+# H1-H3: Register FusionMiniConfig with AutoConfig
+try:
+    from transformers import AutoConfig
+    AutoConfig.register("fusion_mini", FusionMiniConfig)
+except Exception:
+    pass  # Already registered or AutoConfig unavailable
 
 
 class FusionMiniEmbeddings(nn.Module):
@@ -348,16 +361,16 @@ class FusionMini(PreTrainedModel):
         past_key_values: Optional[Tuple] = None,
         use_cache: Optional[bool] = None,
         return_dict: Optional[bool] = True,
-    ) -> Tuple[torch.Tensor, ...]:
+    ) -> CausalLMOutputWithPast:
         """
-        前向传播
+        Forward pass
         """
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         
         # 1. Embeddings
         hidden_states = self.embeddings(input_ids)
         
-        # 2. Transformer 层
+        # 2. Transformer layers
         present_key_values = () if use_cache else None
         
         for i, layer in enumerate(self.layers):
@@ -371,33 +384,38 @@ class FusionMini(PreTrainedModel):
             if use_cache:
                 present_key_values = present_key_values + (cache,)
         
-        # 4. 最后一层 Layer Norm
+        # 4. Final Layer Norm
         hidden_states = self.ln_f(hidden_states)
         
         # 5. LM Head
         logits = self.lm_head(hidden_states)
         
-        # 6. 计算损失（如果有 labels）
+        # 6. Compute loss (if labels provided)
         loss = None
         if labels is not None:
-            # 移位：预测下一个 token
+            # Shift: predict next token
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             
-            # 交叉熵损失
+            # Cross-entropy loss
             loss_fct = nn.CrossEntropyLoss()
             loss = loss_fct(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1),
             )
         
-        if use_cache:
-            return {"loss": loss, "logits": logits, "past_key_values": present_key_values}
+        # C5: Return CausalLMOutputWithPast instead of plain dict
+        if not return_dict:
+            output = (logits,) + (present_key_values,) if present_key_values is not None else (logits,)
+            return ((loss,) + output) if loss is not None else output
         
-        if return_dict:
-            return {"loss": loss, "logits": logits}
-        
-        return (loss, logits)
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=present_key_values,
+            hidden_states=None,
+            attentions=None,
+        )
     
     @torch.no_grad()
     def generate(
@@ -434,8 +452,8 @@ class FusionMini(PreTrainedModel):
                 past_key_values=past_key_values,
             )
             
-            logits = outputs["logits"]
-            past_key_values = outputs.get("past_key_values")
+            logits = outputs.logits
+            past_key_values = outputs.past_key_values
             
             next_token_logits = logits[:, -1, :] / temperature
             
@@ -518,8 +536,8 @@ if __name__ == "__main__":
     )
     
     print(f"\n[OK] 前向传播测试通过")
-    print(f"   Loss: {outputs['loss'].item():.4f}")
-    print(f"   Logits 形状: {outputs['logits'].shape}")
+    print(f"   Loss: {outputs.loss.item():.4f}")
+    print(f"   Logits shape: {outputs.logits.shape}")
     
     # 测试生成
     generated = model.generate(

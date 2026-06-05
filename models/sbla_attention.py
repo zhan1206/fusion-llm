@@ -158,15 +158,18 @@ class SBLAttention(nn.Module):
         device: torch.device,
     ) -> torch.Tensor:
         """
-        构建滑动窗口掩码（支持非正方形，用于 KV cache）
+        Build sliding window mask (supports non-square, for KV cache)
         
-        每个 token 只能看到前后 window_size 范围内的 token
+        Each token can only attend to tokens within window_size range.
+        H7: Clamp window_size to kv_len to avoid degenerate masks when
+        window_size >= sequence length.
         """
+        effective_window = min(window_size, kv_len)
         q_pos = torch.arange(q_len, device=device).float() + (kv_len - q_len)
         kv_pos = torch.arange(kv_len, device=device).float()
         distance = torch.abs(q_pos.unsqueeze(1) - kv_pos.unsqueeze(0))
         
-        mask = (distance > window_size).float()
+        mask = (distance > effective_window).float()
         return mask.masked_fill(mask.bool(), float('-inf'))
     
     def _compute_block_latents(
@@ -193,7 +196,8 @@ class SBLAttention(nn.Module):
         num_blocks = math.ceil(seq_len / self.block_size)
         padded_len = num_blocks * self.block_size
         
-        # Padding（如果需要）
+        # H7: Handle remainder when seq_len is not divisible by block_size
+        # We pad the last block so all blocks are uniform size for matrix ops
         if padded_len > seq_len:
             pad_len = padded_len - seq_len
             hidden_states_padded = F.pad(hidden_states, (0, 0, 0, pad_len))
@@ -431,6 +435,145 @@ class SBLAttention(nn.Module):
         if output_attentions:
             return output, attn_probs, present_key_value
         
+        return output, present_key_value
+
+    def forward_with_qkv(
+        self,
+        Q: torch.Tensor,
+        K: torch.Tensor,
+        V: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        """Forward pass with pre-projected Q/K/V (e.g., after RoPE application).
+
+
+        This allows external position encoding (like RoPE) to be applied to Q/K
+        before entering the SBLA attention computation.
+
+        Args:
+            Q: (batch, num_heads, seq_len, head_dim) - already with position encoding
+            K: (batch, num_kv_heads, seq_len, head_dim) - already with position encoding
+            V: (batch, num_kv_heads, seq_len, head_dim)
+            attention_mask: attention mask
+            past_key_value: cached (K, V) from previous steps
+            use_cache: whether to return cache
+
+        Returns:
+            (output, present_key_value)
+        """
+        batch_size, num_heads, seq_len, head_dim = Q.shape
+        device = Q.device
+
+        # KV Cache: concatenate with past
+        kv_seq_len = seq_len
+        if past_key_value is not None:
+            past_K, past_V = past_key_value
+            kv_seq_len = past_K.shape[2] + seq_len
+            K = torch.cat([past_K, K], dim=2)
+            V = torch.cat([past_V, V], dim=2)
+
+        present_key_value = (K, V) if use_cache else None
+
+        # GQA: expand K/V to match Q heads
+        K = self._repeat_kv(K, self.num_kv_groups)
+        V = self._repeat_kv(V, self.num_kv_groups)
+
+        # Build masks
+        causal_mask = self._build_causal_mask(seq_len, kv_seq_len, device)
+
+        if self.mode == "pure_sbla":
+            window_mask = self._build_window_mask(seq_len, kv_seq_len, self.window_size, device)
+            combined_mask = causal_mask + window_mask
+        else:
+            combined_mask = causal_mask
+
+        # Apply external attention_mask (padding)
+        if attention_mask is not None:
+            if attention_mask.dim() == 2:
+                if past_key_value is not None:
+                    full_mask = torch.ones(batch_size, kv_seq_len, device=device, dtype=attention_mask.dtype)
+                    full_mask[:, -seq_len:] = attention_mask
+                    padding_mask = (1.0 - full_mask.float()).unsqueeze(1).unsqueeze(2)
+                else:
+                    padding_mask = (1.0 - attention_mask.float()).unsqueeze(1).unsqueeze(2)
+                padding_mask = padding_mask * torch.finfo(Q.dtype).min
+                combined_mask = combined_mask.unsqueeze(0).unsqueeze(0) + padding_mask
+            elif attention_mask.dim() == 4:
+                ext_mask = attention_mask.squeeze(1)
+                if past_key_value is not None:
+                    full_mask = torch.ones(batch_size, 1, kv_seq_len, device=device, dtype=ext_mask.dtype)
+                    full_mask[:, :, -seq_len:] = ext_mask
+                    padding_mask = (1.0 - full_mask) * float('-inf')
+                else:
+                    padding_mask = (1.0 - ext_mask) * float('-inf')
+                combined_mask = combined_mask.unsqueeze(0) + padding_mask.unsqueeze(1)
+            else:
+                padding_mask = (1.0 - attention_mask.float()).unsqueeze(1)
+                if past_key_value is not None:
+                    full_mask = torch.ones(batch_size, 1, 1, kv_seq_len, device=device, dtype=attention_mask.dtype)
+                    full_mask[:, :, :, -seq_len:] = attention_mask.unsqueeze(1)
+                    padding_mask = (1.0 - full_mask.float()) * torch.finfo(Q.dtype).min
+                else:
+                    padding_mask = padding_mask * torch.finfo(Q.dtype).min
+                combined_mask = combined_mask.unsqueeze(0).unsqueeze(0) + padding_mask
+        else:
+            combined_mask = combined_mask.unsqueeze(0)
+
+        # Compute attention
+        attn_scores = torch.matmul(Q, K.transpose(-1, -2)) / math.sqrt(self.head_dim)
+        attn_scores = attn_scores + combined_mask
+
+        attn_probs = F.softmax(attn_scores, dim=-1)
+        attn_probs = self.dropout(attn_probs)
+
+        context = torch.matmul(attn_probs, V)
+        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
+        output_std = self.out_proj(context)
+
+        # SBLA latent contribution (skip for incremental steps)
+        if past_key_value is not None and seq_len <= 1:
+            output = output_std
+            output = self.LayerNorm(output)
+            output = self.dropout(output)
+            return output, present_key_value
+
+        # Reconstruct hidden_states from V for block latent computation
+        V_full = self._repeat_kv(V, self.num_kv_groups) if self.num_kv_groups > 1 else V
+        hidden_states_approx = V_full.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
+
+        latent_mask = attention_mask
+        if attention_mask is not None and attention_mask.dim() == 2:
+            latent_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+
+        (
+            blk_q, blk_k, blk_v,
+            num_blocks, real_block_sizes,
+        ) = self._compute_block_latents(hidden_states_approx, latent_mask)
+
+        latent_causal_mask = self._build_causal_mask(num_blocks, num_blocks, device)
+        latent_attn_scores = torch.matmul(blk_q, blk_k.transpose(-1, -2)) / math.sqrt(self.latent_dim)
+        latent_attn_scores = latent_attn_scores + latent_causal_mask.unsqueeze(0)
+
+        latent_attn_probs = F.softmax(latent_attn_scores, dim=-1)
+        latent_attn_probs = self.dropout(latent_attn_probs)
+
+        latent_context = torch.matmul(latent_attn_probs, blk_v)
+        latent_output = self.latent_out_proj(latent_context)
+
+        latent_output = latent_output.unsqueeze(2).expand(
+            -1, -1, self.block_size, -1
+        ).contiguous().view(batch_size, num_blocks * self.block_size, self.hidden_size)
+
+        latent_output = latent_output[:, :seq_len, :]
+
+        gate_value = torch.sigmoid(self.gate)
+        output = output_std + gate_value * latent_output
+
+        output = self.LayerNorm(output)
+        output = self.dropout(output)
+
         return output, present_key_value
 
 

@@ -283,8 +283,8 @@ class DyQuantConverter:
             )
             return quantized
         elif bits == 4:
-            # 4-bit 量化需要更复杂的实现
-            # 这里使用 int8 模拟 + 缩放近似
+            # 4-bit 对称量化（per-channel scale + zero_point）
+            # 注意：此为训练感知近似量化，非推理加速专用 INT4 kernel
             return self._quantize_to_nbit(layer, 4)
         else:
             # 不量化

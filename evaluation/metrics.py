@@ -94,7 +94,8 @@ class ModelEvaluator:
         )
         
         # 计算困惑度
-        loss = outputs["loss"] if isinstance(outputs, dict) else outputs.loss
+        loss = outputs.loss if hasattr(outputs, 'loss') else outputs["loss"]
+        # loss is already mean-reduced over tokens by model, so PPL = exp(loss)
         perplexity = torch.exp(loss).item()
         
         return perplexity
