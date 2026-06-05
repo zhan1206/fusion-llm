@@ -24,7 +24,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-print("[LOGO] Fusion 项目单元测试")
+print("[INFO] Fusion 项目单元测试")
 print("=" * 50)
 
 

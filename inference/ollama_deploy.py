@@ -41,9 +41,9 @@ def check_dependencies():
     convert_script = os.path.join(llama_cpp_dir, "convert-hf-to-gguf.py")
     
     if not os.path.exists(convert_script):
-        logger.warning(f"[WARN][LOGO]  未找到 llama.cpp 转换脚本：{convert_script}")
+        logger.warning(f"[WARN] 未找到 llama.cpp 转换脚本：{convert_script}")
         logger.warning("   请设置环境变量 LLAMA_CPP_DIR 或手动下载 llama.cpp")
-        logger.warning("   下载地址：<ADDRESS_REMOVED>
+        logger.warning("   https://github.com/ggerganov/llama.cpp")
         return False
     
     # 检查 Ollama
@@ -52,15 +52,16 @@ def check_dependencies():
             ["ollama", "--version"],
             capture_output=True,
             text=True,
+            shell=True,
         )
         if result.returncode == 0:
             logger.info(f"[OK] Ollama 已安装：{result.stdout.strip()}")
         else:
-            logger.warning("[WARN][LOGO]  Ollama 未安装或无法运行")
+            logger.warning("[WARN] Ollama 未安装或无法运行")
             logger.warning("   请访问 https://ollama.com 安装")
             return False
     except FileNotFoundError:
-        logger.warning("[WARN][LOGO]  Ollama 未安装")
+        logger.warning("[WARN] Ollama 未安装")
         logger.warning("   请访问 https://ollama.com 安装")
         return False
     
@@ -118,7 +119,7 @@ def convert_to_gguf(
         result = subprocess.run(quantize_cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
-            logger.warning(f"[WARN][LOGO]  量化失败：{result.stderr}")
+            logger.warning(f"[WARN] 量化失败：{result.stderr}")
             logger.warning("   继续使用未量化模型")
         else:
             output_path = output_path.replace(".gguf", f"_{quantize}.gguf")
@@ -392,7 +393,7 @@ ollama run {model_name} --top_p 0.95
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
     
-    logger.info(f"[LOGO] 使用示例已生成：{output_path}")
+    logger.info(f"[INFO] 使用示例已生成：{output_path}")
 
 
 def main():

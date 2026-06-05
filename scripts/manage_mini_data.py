@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-DATA_PATH = Path("data/mini_data.json")
+DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "mini_data.json"
 
 # --- Depth assignment keywords ---
 DEPTH_3_KEYWORDS = ['prove', 'theorem', 'proof', 'derive', 'mathematical', 'complex',

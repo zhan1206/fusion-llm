@@ -481,7 +481,7 @@ class FusionMini(PreTrainedModel):
 
 if __name__ == "__main__":
     # 单元测试
-    print("[LOGO] 测试 Fusion Mini 模型...")
+    print("[INFO] 测试 Fusion Mini 模型...")
     
     # 创建配置
     config = FusionMiniConfig(

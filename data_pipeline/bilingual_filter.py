@@ -377,7 +377,7 @@ def process_data_pipeline(
     en_clean = en_filter.process(en_raw)
     
     # 4. 平衡采样
-    logger.info("\n[BALANCE][LOGO]  平衡采样...")
+    logger.info("\n[BALANCE] 平衡采样...")
     sampler = BalancedSampler(zh_clean, en_clean, zh_ratio=0.5)
     balanced_data = sampler.sample(n_samples)
     
@@ -393,7 +393,7 @@ def process_data_pipeline(
 
 if __name__ == "__main__":
     # 单元测试（模拟数据）
-    print("[LOGO] 测试 Bi-Lingual TrueFilter...")
+    print("[TEST] 测试 Bi-Lingual TrueFilter...")
     
     # 模拟中文数据
     zh_test_data = [

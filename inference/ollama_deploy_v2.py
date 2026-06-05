@@ -557,16 +557,34 @@ def _fallback_export_gguf(model_path: str, output_path: str) -> Optional[str]:
     config = FusionConfig.from_pretrained(model_path)
     model = FusionModel(config)
     
-    # Load weights
-    from pathlib import Path
-    weight_files = list(Path(model_path).glob("*.safetensors")) + list(Path(model_path).glob("*.bin"))
-    if not weight_files:
-        logger.error("No model weight files found")
-        return None
-    
-    # Export as safetensors
+    # Export path
     export_path = output_path.replace('.gguf', '.safetensors')
-    st.save_file(model.state_dict(), export_path)
+    
+    # Load weights - handle sharded models (index.json + multiple safetensors)
+    from pathlib import Path
+    model_path_obj = Path(model_path)
+    index_file = model_path_obj / "model.safetensors.index.json"
+    
+    if index_file.exists():
+        # Sharded model: load all shards and merge
+        import json as _json
+        with open(index_file, 'r') as f:
+            index = _json.load(f)
+        weight_map = index.get("weight_map", {})
+        shard_files = set(weight_map.values())
+        merged_state = {}
+        for shard in shard_files:
+            shard_path = model_path_obj / shard
+            shard_state = st.load_file(str(shard_path))
+            merged_state.update(shard_state)
+        st.save_file(merged_state, export_path)
+    else:
+        # Single-file model
+        weight_files = list(model_path_obj.glob("*.safetensors")) + list(model_path_obj.glob("*.bin"))
+        if not weight_files:
+            logger.error("No model weight files found")
+            return None
+        st.save_file(model.state_dict(), export_path)
     logger.info(f"Exported model weights to: {export_path}")
     logger.info("NOTE: This is a safetensors export, not GGUF. For Ollama deployment,")
     logger.info("      convert this to GGUF using llama.cpp after ensuring architecture compatibility.")

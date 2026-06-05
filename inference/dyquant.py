@@ -520,8 +520,22 @@ class DyQuantConverter:
         output_dir = Path(output_path)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # 保存模型
-        self.model.save_pretrained(output_dir)
+        # 保存模型 - extract state_dict from custom quantized layers
+        # Custom QuantizedLinear layers are not HF-compatible, use safetensors directly
+        try:
+            import safetensors.torch as st
+            state = self.model.state_dict()
+            # Convert non-tensor values (scales/zeros) to tensors for serialization
+            clean_state = {}
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    clean_state[k] = v.contiguous()
+                else:
+                    clean_state[k] = torch.tensor(v) if v is not None else torch.tensor(0.0)
+            st.save_file(clean_state, str(output_dir / "model.safetensors"))
+        except ImportError:
+            # Fallback to torch.save if safetensors unavailable
+            torch.save(self.model.state_dict(), output_dir / "pytorch_model.bin")
         
         # 保存量化配置
         quant_config = {
@@ -639,19 +653,20 @@ class QATTrainer:
         self.model = None
         self.qat_model = None
     
-    def prepare(self) -> nn.Module:
+    def prepare(self) -> Optional[nn.Module]:
         """Load model and insert fake-quantization nodes."""
         self.model = self.converter.load_model()
+        if self.model is None:
+            print("[DyQuant] QAT: model load failed, cannot prepare")
+            return None
         self.qat_model = self._insert_fake_quant(self.model)
         return self.qat_model
     
     def _insert_fake_quant(self, model: nn.Module) -> nn.Module:
         """Insert fake-quantization observers into all Linear layers."""
         for name, module in model.named_modules():
-            if isinstance(module, nn.Linear) and any(
-                kw in name for kw in ['q_proj', 'k_proj', 'v_proj', 'out_proj', 'gate_proj', 'up_proj', 'down_proj']
-            ):
-                # Use PyTorch native fake quantization per-module
+            if isinstance(module, nn.Linear):
+                # Use PyTorch native fake quantization for all Linear layers
                 module.qconfig = torch.ao.quantization.get_default_qat_qconfig('x86')
         torch.ao.quantization.prepare_qat(model, inplace=True)
         return model
