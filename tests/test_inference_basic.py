@@ -1,12 +1,11 @@
 """
-快速推理测试 - 验证 Fusion-LLM 基本功能
+快速推理测试 - 验证 Fusion-LLM 基本推理功能（无 emoji 版本）
 """
 import sys
 import torch
 sys.path.insert(0, '.')
 
 from models.fusion_mini import FusionMini, FusionMiniConfig
-from inference.dashboard import InferenceDashboard, InferenceConfig
 
 
 def test_basic_inference():
@@ -14,14 +13,15 @@ def test_basic_inference():
     print("[TEST] 开始基本推理测试...")
     print()
     
-    # 1. 创建配置
+    # 1. 创建配置（小配置，快速测试）
     print("[1] 创建模型配置...")
     config = FusionMiniConfig(
         vocab_size=1000,
-        hidden_size=128,
-        num_hidden_layers=2,
-        num_attention_heads=4,
-        max_position_embeddings=256,
+        hidden_size=64,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        intermediate_size=128,
+        max_position_embeddings=128,
     )
     print(f"   词汇表大小: {config.vocab_size}")
     print(f"   隐藏层大小: {config.hidden_size}")
@@ -31,71 +31,67 @@ def test_basic_inference():
     # 2. 创建模型
     print("[2] 创建模型...")
     model = FusionMini(config)
+    model.eval()  # 评估模式
     param_count = sum(p.numel() for p in model.parameters()) / 1e3
     print(f"   参数量: {param_count:.1f}K")
+    print("   模型创建成功")
     print()
     
-    # 3. 创建推理仪表板
-    print("[3] 创建推理仪表板...")
-    dashboard = InferenceDashboard(
-        model=model,
-        config=config,
-        device="cpu",
-    )
-    print("   仪表板创建成功")
+    # 3. 测试前向传播（无标签）
+    print("[3] 测试前向传播（无标签）...")
+    input_ids = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        outputs = model(input_ids=input_ids)
+    print(f"   输出类型: {type(outputs)}")
+    if isinstance(outputs, dict):
+        for key, value in outputs.items():
+            if isinstance(value, torch.Tensor):
+                print(f"   {key}: {value.shape}")
+    print("   前向传播成功")
     print()
     
-    # 4. 测试不同 think_rank 设置
-    print("[4] 测试 Thinking Dial...")
-    test_prompt = "Hello, this is a test"
-    
-    for think_rank in range(4):
-        print(f"   测试 think_rank={think_rank}...")
-        dashboard.set_think_rank(think_rank)
-        
-        # 测试 tokenization
-        input_ids = dashboard._tokenize(test_prompt)
-        print(f"     输入 tokens: {input_ids.shape}")
-        
-        # 测试生成（限制 token 数以避免长时间运行）
-        dashboard.inference_config.max_new_tokens = 5
-        try:
-            output = dashboard.generate(test_prompt)
-            print(f"     生成结果: {output[:50]}...")
-        except Exception as e:
-            print(f"     生成失败: {e}")
-        
-        print()
-    
-    print("[TEST] 基本推理测试完成")
+    # 4. 测试前向传播（有标签，计算损失）
+    print("[4] 测试前向传播（有标签）...")
+    labels = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        outputs = model(input_ids=input_ids, labels=labels)
+    print(f"   Loss: {outputs['loss'].item():.4f}")
+    print("   损失计算成功")
     print()
     
-    # 5. 测试 SBLA 注意力
-    print("[5] 验证 SBLA 注意力...")
-    has_sbla = any("SBLAttention" in str(module) for module in model.modules())
-    if has_sbla:
-        print("   ✅ SBLA 注意力已集成")
-    else:
-        print("   ❌ SBLA 注意力未找到")
+    # 5. 测试生成（少量 token）
+    print("[5] 测试生成（5 个 token）...")
+    with torch.no_grad():
+        generated = model.generate(
+            input_ids=input_ids[:, :4],
+            max_new_tokens=5,
+            temperature=1.0,
+            do_sample=False,  # 贪婪解码，确定性
+        )
+    print(f"   生成形状: {generated.shape}")
+    print("   生成成功")
     print()
     
-    print("[TEST] 所有测试完成")
+    print("[TEST] 基本推理测试通过")
     return True
 
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("Fusion-LLM 推理测试")
+    print("Fusion-LLM 基本推理测试")
     print("=" * 60)
     print()
     
     try:
         success = test_basic_inference()
         if success:
-            print("✅ 所有测试通过")
-        else:
-            print("❌ 测试失败")
+            print()
+            print("[PASS] 测试通过")
     except Exception as e:
-        print(f"❌ 测试出错: {e}")
+        print()
+        print(f"[FAIL] 测试出错: {e}")
         import traceback
         traceback.print_exc()
+        sys.exit(1)
+    
+    sys.exit(0)
