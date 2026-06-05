@@ -136,14 +136,12 @@ def create_local_model(
     # S3 fix: override vocab_size to match actual tokenizer
     if vocab_size_override is not None:
         config_dict['vocab_size'] = vocab_size_override
-    if vocab_size_override is not None:
-        config_dict['vocab_size'] = vocab_size_override
     
     common_config = dict(
         block_size=512,
         latent_dim=64,
         window_size=2048,
-        sbla_mode="mixed",
+        sbla_mode="hybrid",
         rms_norm_eps=1e-6,
         rope_theta=10000.0,
         tie_word_embeddings=False,
@@ -153,16 +151,9 @@ def create_local_model(
     
     config = FusionConfig(**config_dict, **common_config)
     
-    # Override vocab_size if tokenizer has different size (S3 fix)
+    # S3-fix: sync vocab_size to actual tokenizer if provided
     if vocab_size_override is not None and vocab_size_override != config.vocab_size:
         logger.warning(f"[S3-fix] Overriding model vocab_size: {config.vocab_size} -> {vocab_size_override}")
-        config.vocab_size = vocab_size_override
-    
-    # S3-fix: sync vocab_size to actual tokenizer if provided
-    if vocab_size_override is not None:
-        if vocab_size_override != config.vocab_size:
-            logger.warning(f"[S3-fix] Overriding vocab_size: {config.vocab_size} -> {vocab_size_override}")
-            model.resize_token_embeddings(vocab_size_override)
         config.vocab_size = vocab_size_override
     
     logger.info(f"[create_local_model] 创建 Fusion-{model_size}（随机初始化）")

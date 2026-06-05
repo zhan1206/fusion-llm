@@ -28,7 +28,7 @@
   "num_thinking_depths": 4,
 
   "torch_dtype": "float32",
-  "transformers_version": "4.36.0",
+  "transformers_version": "4.46.0",
 
   "pad_token_id": 0,
   "bos_token_id": 1,

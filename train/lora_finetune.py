@@ -162,7 +162,7 @@ def create_local_model(
         block_size=512,
         latent_dim=64,
         window_size=2048,
-        sbla_mode="mixed",
+        sbla_mode="hybrid",
         rms_norm_eps=1e-6,
         rope_theta=10000.0,
         tie_word_embeddings=False,
@@ -225,7 +225,7 @@ def apply_lora(
     """
     if target_modules is None:
         # 目标模块（根据 FusionModel 的实际层名）
-        target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        target_modules = ["q_proj", "v_proj", "k_proj", "out_proj", "gate_proj", "up_proj", "down_proj"]
     
     logger.info(f"[apply_lora] 应用 LoRA（rank={lora_rank}, alpha={lora_alpha}）")
     logger.info(f"[apply_lora] 目标模块：{target_modules}")

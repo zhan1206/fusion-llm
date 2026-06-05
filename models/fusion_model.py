@@ -141,7 +141,7 @@ class FusionAttention(nn.Module):
             block_size=config.block_size,
             latent_dim=config.latent_dim,
             dropout=config.attention_probs_dropout_prob,
-            window_size=config.block_size,  # window = block_size by default
+            window_size=config.window_size,  # use dedicated window_size field
             mode=mode,
             num_key_value_heads=config.num_key_value_heads,
         )

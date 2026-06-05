@@ -35,6 +35,7 @@ Thinking Dial（动态推理强度控制）- 真实实现
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import re
 from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass
@@ -616,7 +617,7 @@ class GRPOTrainer:
         
         # Step 4: Get log probs and compute GRPO loss
         outputs = self.model(input_ids=generated_ids)
-        logits = outputs.logits
+        logits = outputs["logits"]
         
         use_labels = labels.repeat_interleave(num_samples, dim=0) if labels is not None else generated_ids
         log_probs = self._normalize_logits_to_log_probs(logits, use_labels)
