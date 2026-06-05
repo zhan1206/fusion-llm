@@ -10,7 +10,7 @@
 """
 import sys
 import torch
-import torch.nn as optim
+import torch.optim as optim  # 正确：AdamW 在 torch.optim 中
 sys.path.insert(0, '.')
 
 from models.fusion_mini import FusionMini, FusionMiniConfig
@@ -45,7 +45,7 @@ def test_basic_training():
     print("   模型创建成功")
     print()
     
-    # 3. 创建优化器
+    # 3. 创建优化器（正确：torch.optim.AdamW）
     print("[3] 创建优化器...")
     optimizer = optim.AdamW(
         model.parameters(),
