@@ -1,5 +1,16 @@
 # 变更日志
 
+## [1.2.0] - 2026-06-06
+
+### 新增
+- 添加 BLEU/ROUGE/METEOR 评估指标（`evaluation/bleu_rouge_meteor.py`）
+- 添加 TensorRT 部署选项（`deployment/export_tensorrt_openvino.py`）
+- 添加 OpenVINO 部署选项（`deployment/export_tensorrt_openvino.py`）
+- 添加混合精度训练 AMPTrainer（`train/training_optimizations.py`）
+- 添加梯度累积 GradientAccumulator（`train/training_optimizations.py`）
+- 添加 LIME 模型解释工具（`evaluation/model_interpretability.py`）
+- 添加 SHAP 模型解释工具（`evaluation/model_interpretability.py`）
+
 ## [1.1.0] - 2026-06-05
 
 ### 新增
