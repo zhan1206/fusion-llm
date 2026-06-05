@@ -96,8 +96,8 @@ def main():
             deduped.append(item)
             seen_prompts.add(item['prompt'])
 
-    # Replace with new diverse samples
-    data = list(NEW_SAMPLES)
+    # Merge deduplicated old data with new diverse samples
+    data = deduped + list(NEW_SAMPLES)
 
     # Count
     from collections import Counter

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional, Generator
 
 import torch
+import torch.nn.functional as F
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -136,6 +137,10 @@ class InferenceEngine:
         print(f"[Thinking Dial] Rank {rank}: temp={preset['temperature']}, "
               f"top_p={preset['top_p']}, max_tokens={preset['max_new_tokens']}")
     
+    def _ensure_tokenizer(self):
+        """Initialize tokenizer if not already loaded."""
+        if self._tokenizer is not None:
+            return
         try:
             from models.tokenizer import get_tokenizer
             self._tokenizer = get_tokenizer("fusion")
@@ -146,6 +151,7 @@ class InferenceEngine:
 
     def _tokenize(self, text: str) -> torch.Tensor:
         """Tokenize text using proper tokenizer, falling back to UTF-8 bytes."""
+        self._ensure_tokenizer()
         if self._tokenizer is not None:
             encoded = self._tokenizer.encode(text, truncation=True, max_length=self.config.max_position_embeddings)
             return torch.tensor([encoded], dtype=torch.long).to(self.device)

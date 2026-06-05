@@ -23,7 +23,11 @@ Fusion 数据管道：双母语清洗管道（Bi-Lingual TrueFilter）
 
 import re
 import json
-import langid
+try:
+    import langid
+    _LANGID_AVAILABLE = True
+except ImportError:
+    _LANGID_AVAILABLE = False
 from typing import List, Dict, Optional, Tuple
 import logging
 
@@ -52,7 +56,10 @@ class BilingualTrueFilter:
         self.max_length = max_length
         
         # 初始化语言识别
-        langid.set_languages(['zh', 'en'])
+        if _LANGID_AVAILABLE:
+            langid.set_languages(['zh', 'en'])
+        else:
+            logger.warning("langid not installed, language detection disabled")
         
         logger.info(f"✅ 初始化 {lang.upper()} 数据过滤器")
         
@@ -107,6 +114,8 @@ class BilingualTrueFilter:
         
         使用 langid 库识别文本语言
         """
+        if not _LANGID_AVAILABLE:
+            return True  # 未安装 langid 时跳过语言检测
         lang, confidence = langid.classify(text)
         
         # 置信度阈值

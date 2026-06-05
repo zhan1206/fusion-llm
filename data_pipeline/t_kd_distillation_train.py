@@ -196,14 +196,19 @@ class DistillationTrainer:
         T = self.temperature
         T_squared = T * T
         
+        # 对齐 vocab 维度：截取到较小 vocab size 进行蒸馏
+        min_vocab = min(teacher_logits.size(-1), student_logits.size(-1))
+        t_logits = teacher_logits[..., :min_vocab]
+        s_logits = student_logits[..., :min_vocab]
+        
         # 软化概率分布
-        teacher_probs = F.softmax(teacher_logits / T, dim=-1)
-        student_log_probs = F.log_softmax(student_logits / T, dim=-1)
+        teacher_probs = F.softmax(t_logits / T, dim=-1)
+        student_log_probs = F.log_softmax(s_logits / T, dim=-1)
         
         # KL 散度（教师 || 学生）
         kl_loss = F.kl_div(
-            student_log_probs.view(-1, student_logits.size(-1)),
-            teacher_probs.view(-1, teacher_logits.size(-1)),
+            student_log_probs.view(-1, min_vocab),
+            teacher_probs.view(-1, min_vocab),
             reduction="batchmean",
             log_target=False,
         ) * T_squared  # 温度缩放

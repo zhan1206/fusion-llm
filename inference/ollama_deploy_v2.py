@@ -55,8 +55,6 @@ def find_llama_cpp() -> str:
     possible_paths = [
         "./llama.cpp",
         os.path.expanduser("~/llama.cpp"),
-        "C:/llama.cpp",
-        "D:/llama.cpp",
         os.path.join(os.path.dirname(__file__), "..", "llama.cpp"),
         os.path.join(os.path.dirname(__file__), "..", "..", "llama.cpp"),
     ]
@@ -568,7 +566,7 @@ def _fallback_export_gguf(model_path: str, output_path: str) -> Optional[str]:
     
     # Export as safetensors
     export_path = output_path.replace('.gguf', '.safetensors')
-    st.save_model(model, export_path)
+    st.save_file(model.state_dict(), export_path)
     logger.info(f"Exported model weights to: {export_path}")
     logger.info("NOTE: This is a safetensors export, not GGUF. For Ollama deployment,")
     logger.info("      convert this to GGUF using llama.cpp after ensuring architecture compatibility.")

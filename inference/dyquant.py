@@ -108,10 +108,12 @@ class DyQuantConverter:
             )
             self.model.eval()
             print(f"[DyQuant] 模型加载成功")
+            return self.model
         except Exception as e:
             print(f"[DyQuant] 模型加载失败：{e}")
-            print(f"[DyQuant] 将使用模拟模式进行量化演示")
+            import traceback; traceback.print_exc()
             self.model = None
+            return None
     
     def analyze_sensitivity(self) -> Dict[str, float]:
         """
@@ -647,9 +649,9 @@ class QATTrainer:
             if isinstance(module, nn.Linear) and any(
                 kw in name for kw in ['q_proj', 'k_proj', 'v_proj', 'out_proj', 'gate_proj', 'up_proj', 'down_proj']
             ):
-                # Use PyTorch native fake quantization
-                module = torch.ao.quantization.fuse_modules(model, [name], inplace=False)
-                torch.ao.quantization.prepare_qat(module, inplace=True)
+                # Use PyTorch native fake quantization per-module
+                module.qconfig = torch.ao.quantization.get_default_qat_qconfig('x86')
+        torch.ao.quantization.prepare_qat(model, inplace=True)
         return model
     
     def train(
