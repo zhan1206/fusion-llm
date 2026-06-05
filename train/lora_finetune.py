@@ -130,8 +130,8 @@ def create_local_model(
     quantize: bool = False,
     load_in_4bit: bool = False,
     load_in_8bit: bool = False,
+    vocab_size_override: int | None = None,
 ):
-    """
     """
     创建本地 FusionModel（无需预训练权重）
     

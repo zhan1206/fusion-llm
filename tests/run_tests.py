@@ -33,39 +33,46 @@ class TestSBLAAttention(unittest.TestCase):
     
     def test_forward_pass(self):
         """测试前向传播"""
-        from models.sbla_attention import SlidingBlockLatentAttention
+        from models.sbla_attention import SBLAttention
         
         batch_size = 2
         seq_len = 1024
-        d_model = 512
-        n_heads = 8
+        hidden_size = 512
+        num_heads = 8
         
-        attn = SlidingBlockLatentAttention(
-            d_model=d_model,
-            n_heads=n_heads,
+        attn = SBLAttention(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
             block_size=512,
             latent_dim=64,
+            window_size=1024,
+            mode="pure_sbla",
         )
         
-        x = torch.randn(batch_size, seq_len, d_model)
-        output = attn(x)
+        x = torch.randn(batch_size, seq_len, hidden_size)
+        attention_mask = torch.ones(batch_size, seq_len)
+        output, _ = attn(hidden_states=x, attention_mask=attention_mask)
         
-        self.assertEqual(output.shape, (batch_size, seq_len, d_model))
+        self.assertEqual(output.shape, (batch_size, seq_len, hidden_size))
         print("✅ SBLA 前向传播测试通过")
     
     def test_long_sequence(self):
         """测试长序列处理"""
-        from models.sbla_attention import SlidingBlockLatentAttention
+        from models.sbla_attention import SBLAttention
         
-        attn = SlidingBlockLatentAttention(
-            d_model=256,
-            n_heads=4,
+        attn = SBLAttention(
+            hidden_size=256,
+            num_heads=4,
             block_size=256,
+            latent_dim=32,
+            window_size=512,
+            mode="pure_sbla",
         )
         
         # 测试 8K 序列
         x = torch.randn(1, 8192, 256)
-        output = attn(x)
+        attention_mask = torch.ones(1, 8192)
+        output, _ = attn(hidden_states=x, attention_mask=attention_mask)
         
         self.assertEqual(output.shape, (1, 8192, 256))
         print("✅ SBLA 长序列测试通过")
@@ -76,17 +83,10 @@ class TestThinkingDial(unittest.TestCase):
     
     def test_parse_depth(self):
         """测试解析推理深度"""
-        from models.thinking_dial import ThinkingDialProcessor
-        
-        # 模拟 tokenizer
-        class MockTokenizer:
-            def add_special_tokens(self, tokens):
-                pass
-        
-        processor = ThinkingDialProcessor(MockTokenizer())
+        from models.thinking_dial import parse_think_token
         
         # 测试解析
-        depth, clean = processor.parse_thinking_depth(
+        depth, clean = parse_think_token(
             "<|think_depth_2|> 证明勾股定理"
         )
         
@@ -96,15 +96,9 @@ class TestThinkingDial(unittest.TestCase):
     
     def test_inject_token(self):
         """测试注入控制 token"""
-        from models.thinking_dial import ThinkingDialProcessor
+        from models.thinking_dial import apply_thinking_control
         
-        class MockTokenizer:
-            def add_special_tokens(self, tokens):
-                pass
-        
-        processor = ThinkingDialProcessor(MockTokenizer())
-        
-        result = processor.inject_thinking_token(
+        result = apply_thinking_control(
             "解释量子纠缠",
             depth=1,
         )

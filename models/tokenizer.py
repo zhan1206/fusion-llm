@@ -125,11 +125,12 @@ def get_effective_vocab_size(tokenizer_type: str = "gpt2", requested_vocab: int 
     Return the effective vocab size that should be used in model config.
     This ensures model embedding size matches the actual tokenizer.
     """
-    if tokenizer_type == "gpt2":
-        return 50257 + len(FUSION_SPECIAL_TOKENS["think_tokens"]) + 1  # ~50262
-    if tokenizer_type == "fusion":
+    try:
+        tok = get_tokenizer(tokenizer_type)
+        return len(tok)
+    except Exception:
+        # Fallback to requested vocab on error
         return requested_vocab
-    return requested_vocab
 
 
 if __name__ == "__main__":

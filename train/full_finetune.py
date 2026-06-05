@@ -22,6 +22,7 @@ Fusion 模型全参数微调脚本
 
 import argparse
 import torch
+from typing import Optional
 import torch.nn as nn
 import deepspeed
 from transformers import (

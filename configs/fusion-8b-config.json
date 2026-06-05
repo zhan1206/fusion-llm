@@ -19,7 +19,7 @@
   "block_size": 512,
   "latent_dim": 64,
   "window_size": 2048,
-  "sbla_mode": "mixed",
+  "sbla_mode": "hybrid",
   
   "rms_norm_eps": 1e-6,
   "rope_theta": 10000.0,
