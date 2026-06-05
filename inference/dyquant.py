@@ -740,19 +740,46 @@ class QATTrainer:
         print(f"[QAT] Training complete ({step} steps)")
     
     def _load_dataset(self, data_path: str, max_seq_len: int):
-        """Load JSON training data."""
+        """Load JSON training data and tokenize with model's tokenizer."""
         import json
+        from transformers import AutoTokenizer
+        
         with open(data_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         texts = [item.get('text', item.get('prompt', '')) + ' ' + item.get('response', '') for item in data]
-        # Simple tokenization: character-level for now
-        encoded = [list(t.encode('utf-8'))[:max_seq_len] for t in texts]
-        padded = [
-            seq + [0] * (max_seq_len - len(seq)) if len(seq) < max_seq_len else seq
-            for seq in encoded
-        ]
-        return torch.utils.data.TensorDataset(torch.tensor(padded, dtype=torch.long))
+        
+        # Load tokenizer from model path
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                self.config.model_path,
+                trust_remote_code=True,
+            )
+        except Exception as e:
+            print(f"[QAT] Warning: Cannot load tokenizer: {e}, using character-level fallback")
+            # Fallback to character-level encoding
+            encoded = [list(t.encode('utf-8'))[:max_seq_len] for t in texts]
+            padded = [
+                seq + [0] * (max_seq_len - len(seq)) if len(seq) < max_seq_len else seq[:max_seq_len]
+                for seq in encoded
+            ]
+            return torch.utils.data.TensorDataset(torch.tensor(padded, dtype=torch.long))
+        
+        # Tokenize with proper tokenizer
+        encoded = []
+        for text in texts:
+            # Encode text to token IDs
+            token_ids = tokenizer.encode(text, max_length=max_seq_len, truncation=True)
+            
+            # Pad or truncate to max_seq_len
+            if len(token_ids) < max_seq_len:
+                token_ids = token_ids + [tokenizer.pad_token_id or 0] * (max_seq_len - len(token_ids))
+            else:
+                token_ids = token_ids[:max_seq_len]
+            
+            encoded.append(token_ids)
+        
+        return torch.utils.data.TensorDataset(torch.tensor(encoded, dtype=torch.long))
     
     def _generate_calib_data(self, num_samples: int, seq_len: int):
         """Generate random calibration data."""
