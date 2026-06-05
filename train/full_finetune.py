@@ -151,11 +151,6 @@ def create_local_model(
     
     config = FusionConfig(**config_dict, **common_config)
     
-    # S3-fix: sync vocab_size to actual tokenizer if provided
-    if vocab_size_override is not None and vocab_size_override != config.vocab_size:
-        logger.warning(f"[S3-fix] Overriding model vocab_size: {config.vocab_size} -> {vocab_size_override}")
-        config.vocab_size = vocab_size_override
-    
     logger.info(f"[create_local_model] 创建 Fusion-{model_size}（随机初始化）")
     logger.info(f"  hidden_size={config.hidden_size}, layers={config.num_hidden_layers}, "
                 f"heads={config.num_attention_heads}")

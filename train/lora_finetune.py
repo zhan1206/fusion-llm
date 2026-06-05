@@ -132,6 +132,7 @@ def create_local_model(
     load_in_8bit: bool = False,
 ):
     """
+    """
     创建本地 FusionModel（无需预训练权重）
     
     参数：
@@ -139,6 +140,7 @@ def create_local_model(
         quantize: 是否量化
         load_in_4bit: 4-bit 量化（NF4）
         load_in_8bit: 8-bit 量化
+        vocab_size_override: S3 fix - sync vocab to actual tokenizer size
     """
     # 模型配置（基于尺寸）
     model_configs = {
@@ -156,6 +158,10 @@ def create_local_model(
         raise ValueError(f"不支持的模型大小：{model_size}，可选：{list(model_configs.keys())}")
     
     config_dict = model_configs[model_size]
+    
+    # S3 fix: override vocab_size to match actual tokenizer
+    if vocab_size_override is not None:
+        config_dict['vocab_size'] = vocab_size_override
     
     # 通用配置
     common_config = dict(
@@ -262,12 +268,16 @@ def train(args):
         "0.5B": 32000, "1.5B": 32000, "8B": 100000, "14B": 100000
     }.get(args.model_size, 32000))
     
+    # S3 fix: sync vocab_size to actual tokenizer
+    actual_vocab_size = len(tokenizer)
+    
     # 2. 创建模型（本地随机初始化）
     model, config = create_local_model(
         model_size=args.model_size,
         quantize=args.quantize,
         load_in_4bit=args.load_in_4bit,
         load_in_8bit=args.load_in_8bit,
+        vocab_size_override=actual_vocab_size,
     )
     
     # 3. 应用 LoRA
