@@ -47,7 +47,7 @@ class TKDDistiller:
             device: 设备（cuda/cpu）
             torch_dtype: 数据类型
         """
-        print(f"📚 加载教师模型：{teacher_model}")
+        print(f"[BOOK] 加载教师模型：{teacher_model}")
         
         self.device = device
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -64,7 +64,7 @@ class TKDDistiller:
         
         self.model.eval()
         
-        print(f"✅ 教师模型加载成功")
+        print(f"[OK] 教师模型加载成功")
         print(f"   设备：{self.model.device}")
         print(f"   参数量：{sum(p.numel() for p in self.model.parameters()) / 1e9:.2f}B")
         
@@ -164,7 +164,7 @@ class TKDDistiller:
         返回：
             蒸馏结果列表
         """
-        print(f"\n📚 开始 T-KD 蒸馏...")
+        print(f"\n[BOOK] 开始 T-KD 蒸馏...")
         print(f"   主题数：{len(topics)}")
         print(f"   数据源：{source_type}")
         
@@ -195,7 +195,7 @@ class TKDDistiller:
                     with open(output_path, 'a', encoding='utf-8') as f:
                         f.write(json.dumps(result, ensure_ascii=False) + '\n')
                 
-                print(f"✅ 完成（生成 {len(text)} 字符）")
+                print(f"[OK] 完成（生成 {len(text)} 字符）")
                 
                 # 避免 GPU 过热
                 if i % 10 == 0:
@@ -203,10 +203,10 @@ class TKDDistiller:
                     time.sleep(1)
                     
             except Exception as e:
-                print(f"❌ 失败：{e}")
+                print(f"[FAIL] 失败：{e}")
                 continue
         
-        print(f"\n🎉 蒸馏完成！共生成 {len(results)} 个样本")
+        print(f"\n[DONE] 蒸馏完成！共生成 {len(results)} 个样本")
         
         return results
 
@@ -330,9 +330,9 @@ def main():
             output_path=output_path,
         )
         
-        print(f"\n✅ {source} 蒸馏完成，结果保存至：{output_path}")
+        print(f"\n[OK] {source} 蒸馏完成，结果保存至：{output_path}")
     
-    print(f"\n🎉 所有数据源蒸馏完成！")
+    print(f"\n[DONE] 所有数据源蒸馏完成！")
     print(f"   输出目录：{Path(args.output_path).parent}")
 
 

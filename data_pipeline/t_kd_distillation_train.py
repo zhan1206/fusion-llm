@@ -57,7 +57,7 @@ class DistillationDataset(Dataset):
                 if line.strip():
                     self.data.append(json.loads(line))
         
-        logger.info(f"✅ 加载数据：{len(self.data)} 条")
+        logger.info(f"[OK] 加载数据：{len(self.data)} 条")
     
     def __len__(self):
         return len(self.data)
@@ -127,7 +127,7 @@ class DistillationTrainer:
         self.grad_accum_steps = grad_accum_steps
         
         # 1. 加载教师模型（冻结）
-        logger.info(f"📚 加载教师模型：{teacher_model_name}")
+        logger.info(f"[BOOK] 加载教师模型：{teacher_model_name}")
         self.teacher_tokenizer = AutoTokenizer.from_pretrained(
             teacher_model_name,
             trust_remote_code=True,
@@ -144,10 +144,10 @@ class DistillationTrainer:
         for param in self.teacher_model.parameters():
             param.requires_grad = False
         
-        logger.info(f"✅ 教师模型加载完成（参数已冻结）")
+        logger.info(f"[OK] 教师模型加载完成（参数已冻结）")
         
         # 2. 加载学生模型（可训练）
-        logger.info(f"🎓 加载学生模型：{student_model_name}")
+        logger.info(f"[GRAD] 加载学生模型：{student_model_name}")
         self.student_tokenizer = AutoTokenizer.from_pretrained(
             student_model_name,
             trust_remote_code=True,
@@ -162,7 +162,7 @@ class DistillationTrainer:
         
         self.student_model.train()
         
-        logger.info(f"✅ 学生模型加载完成（可训练）")
+        logger.info(f"[OK] 学生模型加载完成（可训练）")
         
         # 3. 优化器 + 学习率调度器
         self.optimizer = torch.optim.AdamW(
@@ -171,7 +171,7 @@ class DistillationTrainer:
             weight_decay=0.01,
         )
         
-        logger.info(f"✅ 优化器初始化完成（lr={learning_rate}）")
+        logger.info(f"[OK] 优化器初始化完成（lr={learning_rate}）")
     
     def compute_distillation_loss(
         self,
@@ -269,7 +269,7 @@ class DistillationTrainer:
         )
         
         # 3. 训练循环
-        logger.info(f"🚀 开始蒸馏训练...")
+        logger.info(f"[GO] 开始蒸馏训练...")
         logger.info(f"   轮数：{num_epochs}")
         logger.info(f"   批次大小：{self.batch_size}")
         logger.info(f"   梯度累积：{self.grad_accum_steps}")
@@ -365,7 +365,7 @@ class DistillationTrainer:
             self.student_model.save_pretrained(checkpoint_dir)
             self.student_tokenizer.save_pretrained(checkpoint_dir)
             
-            logger.info(f"   ✅ 检查点保存至：{checkpoint_dir}")
+            logger.info(f"   [OK] 检查点保存至：{checkpoint_dir}")
         
         # 4. 保存最终模型
         output_path = Path(output_dir) / "final"
@@ -374,7 +374,7 @@ class DistillationTrainer:
         self.student_model.save_pretrained(output_path)
         self.student_tokenizer.save_pretrained(output_path)
         
-        logger.info(f"🎉 蒸馏训练完成！模型保存至：{output_path}")
+        logger.info(f"[DONE] 蒸馏训练完成！模型保存至：{output_path}")
     
     def evaluate(
         self,
@@ -390,7 +390,7 @@ class DistillationTrainer:
             max_length: 最大序列长度
             num_samples: 评估样本数
         """
-        logger.info(f"📊 开始评估...")
+        logger.info(f"[CHART] 开始评估...")
         
         self.student_model.eval()
         
@@ -430,7 +430,7 @@ class DistillationTrainer:
         
         avg_loss = total_loss / max(num_batches, 1)
         
-        logger.info(f"✅ 评估完成")
+        logger.info(f"[OK] 评估完成")
         logger.info(f"   Average Loss: {avg_loss:.4f}")
         logger.info(f"   Perplexity: {torch.exp(torch.tensor(avg_loss)).item():.2f}")
 
@@ -547,7 +547,7 @@ def main():
         max_length=args.max_length,
     )
     
-    logger.info("🎉 蒸馏训练完成！")
+    logger.info("[DONE] 蒸馏训练完成！")
 
 
 if __name__ == "__main__":

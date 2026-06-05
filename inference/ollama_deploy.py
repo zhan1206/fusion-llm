@@ -34,14 +34,14 @@ def check_dependencies():
     """
     检查依赖项
     """
-    logger.info("🔍 检查依赖项...")
+    logger.info("[SEARCH] 检查依赖项...")
     
     # 检查 llama.cpp 转换脚本
     llama_cpp_dir = os.environ.get("LLAMA_CPP_DIR", "")
     convert_script = os.path.join(llama_cpp_dir, "convert-hf-to-gguf.py")
     
     if not os.path.exists(convert_script):
-        logger.warning(f"⚠️  未找到 llama.cpp 转换脚本：{convert_script}")
+        logger.warning(f"[WARN][LOGO]  未找到 llama.cpp 转换脚本：{convert_script}")
         logger.warning("   请设置环境变量 LLAMA_CPP_DIR 或手动下载 llama.cpp")
         logger.warning("   下载地址：<ADDRESS_REMOVED>
         return False
@@ -54,17 +54,17 @@ def check_dependencies():
             text=True,
         )
         if result.returncode == 0:
-            logger.info(f"✅ Ollama 已安装：{result.stdout.strip()}")
+            logger.info(f"[OK] Ollama 已安装：{result.stdout.strip()}")
         else:
-            logger.warning("⚠️  Ollama 未安装或无法运行")
+            logger.warning("[WARN][LOGO]  Ollama 未安装或无法运行")
             logger.warning("   请访问 https://ollama.com 安装")
             return False
     except FileNotFoundError:
-        logger.warning("⚠️  Ollama 未安装")
+        logger.warning("[WARN][LOGO]  Ollama 未安装")
         logger.warning("   请访问 https://ollama.com 安装")
         return False
     
-    logger.info("✅ 依赖项检查通过")
+    logger.info("[OK] 依赖项检查通过")
     return True
 
 
@@ -81,7 +81,7 @@ def convert_to_gguf(
         output_path: 输出路径
         quantize: 量化级别（q4_k_m, q5_k_m, q8_0 等）
     """
-    logger.info("🔄 转换为 GGUF 格式...")
+    logger.info("[SYNC] 转换为 GGUF 格式...")
     
     llama_cpp_dir = os.environ.get("LLAMA_CPP_DIR", "")
     convert_script = os.path.join(llama_cpp_dir, "convert-hf-to-gguf.py")
@@ -99,14 +99,14 @@ def convert_to_gguf(
     result = subprocess.run(cmd, capture_output=True, text=True)
     
     if result.returncode != 0:
-        logger.error(f"❌ 转换失败：{result.stderr}")
+        logger.error(f"[FAIL] 转换失败：{result.stderr}")
         raise RuntimeError("GGUF 转换失败")
     
-    logger.info(f"✅ GGUF 转换完成：{output_path}")
+    logger.info(f"[OK] GGUF 转换完成：{output_path}")
     
     # 量化（可选）
     if quantize:
-        logger.info(f"🔧 量化模型（{quantize}）...")
+        logger.info(f"[TOOL] 量化模型（{quantize}）...")
         
         quantize_cmd = [
             os.path.join(llama_cpp_dir, "llama-quantize"),
@@ -118,11 +118,11 @@ def convert_to_gguf(
         result = subprocess.run(quantize_cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
-            logger.warning(f"⚠️  量化失败：{result.stderr}")
+            logger.warning(f"[WARN][LOGO]  量化失败：{result.stderr}")
             logger.warning("   继续使用未量化模型")
         else:
             output_path = output_path.replace(".gguf", f"_{quantize}.gguf")
-            logger.info(f"✅ 量化完成：{output_path}")
+            logger.info(f"[OK] 量化完成：{output_path}")
     
     return output_path
 
@@ -144,7 +144,7 @@ def create_modelfile(
         context_size: 上下文窗口大小
         thinking_dial: 是否启用 Thinking Dial
     """
-    logger.info("📝 创建 Modelfile...")
+    logger.info("[NOTE] 创建 Modelfile...")
     
     # Modelfile 内容
     content = f"""# Fusion 模型：{model_name}
@@ -189,7 +189,7 @@ TEMPLATE \"\"\"{{ if .System }}<|im_start|>system
     with open(modelfile_path, 'w', encoding='utf-8') as f:
         f.write(content)
     
-    logger.info(f"✅ Modelfile 创建完成：{modelfile_path}")
+    logger.info(f"[OK] Modelfile 创建完成：{modelfile_path}")
 
 
 def create_ollama_model(modelfile_path: str, model_name: str):
@@ -200,7 +200,7 @@ def create_ollama_model(modelfile_path: str, model_name: str):
         modelfile_path: Modelfile 路径
         model_name: 模型名称
     """
-    logger.info(f"🚀 创建 Ollama 模型：{model_name}...")
+    logger.info(f"[GO] 创建 Ollama 模型：{model_name}...")
     
     # 删除已存在的模型
     subprocess.run(
@@ -216,10 +216,10 @@ def create_ollama_model(modelfile_path: str, model_name: str):
     result = subprocess.run(cmd, capture_output=True, text=True)
     
     if result.returncode != 0:
-        logger.error(f"❌ 创建失败：{result.stderr}")
+        logger.error(f"[FAIL] 创建失败：{result.stderr}")
         raise RuntimeError("Ollama 模型创建失败")
     
-    logger.info(f"✅ Ollama 模型创建成功：{model_name}")
+    logger.info(f"[OK] Ollama 模型创建成功：{model_name}")
     logger.info(f"   运行 `ollama run {model_name}` 开始使用")
 
 
@@ -242,13 +242,13 @@ def deploy(
         context_size: 上下文窗口
         thinking_dial: 是否启用 Thinking Dial
     """
-    logger.info("🚀 开始 Ollama 部署流程...")
+    logger.info("[GO] 开始 Ollama 部署流程...")
     logger.info(f"   模型路径：{model_path}")
     logger.info(f"   模型名称：{model_name}")
     
     # 1. 检查依赖
     if not check_dependencies():
-        logger.error("❌ 依赖项检查失败，请先安装所需工具")
+        logger.error("[FAIL] 依赖项检查失败，请先安装所需工具")
         return False
     
     # 2. 创建输出目录
@@ -263,7 +263,7 @@ def deploy(
             quantize=quantize,
         )
     except RuntimeError as e:
-        logger.error(f"❌ GGUF 转换失败：{e}")
+        logger.error(f"[FAIL] GGUF 转换失败：{e}")
         return False
     
     # 4. 创建 Modelfile
@@ -283,14 +283,14 @@ def deploy(
             model_name=model_name,
         )
     except RuntimeError as e:
-        logger.error(f"❌ Ollama 模型创建失败：{e}")
+        logger.error(f"[FAIL] Ollama 模型创建失败：{e}")
         return False
     
     # 6. 生成使用示例
     example_path = os.path.join(output_dir, "USAGE.md")
     generate_usage_example(model_name, example_path)
     
-    logger.info("✅ 部署完成！")
+    logger.info("[OK] 部署完成！")
     logger.info(f"   运行：`ollama run {model_name}`")
     logger.info(f"   示例：见 {example_path}")
     
@@ -392,7 +392,7 @@ ollama run {model_name} --top_p 0.95
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
     
-    logger.info(f"📖 使用示例已生成：{output_path}")
+    logger.info(f"[LOGO] 使用示例已生成：{output_path}")
 
 
 def main():
@@ -426,9 +426,9 @@ def main():
     )
     
     if success:
-        logger.info("🎉 部署成功！")
+        logger.info("[DONE] 部署成功！")
     else:
-        logger.error("❌ 部署失败")
+        logger.error("[FAIL] 部署失败")
 
 
 if __name__ == "__main__":

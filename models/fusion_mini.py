@@ -481,7 +481,7 @@ class FusionMini(PreTrainedModel):
 
 if __name__ == "__main__":
     # 单元测试
-    print("🧪 测试 Fusion Mini 模型...")
+    print("[LOGO] 测试 Fusion Mini 模型...")
     
     # 创建配置
     config = FusionMiniConfig(
@@ -492,7 +492,7 @@ if __name__ == "__main__":
         intermediate_size=512,
     )
     
-    print(f"✅ 配置创建成功")
+    print(f"[OK] 配置创建成功")
     print(f"   词表大小：{config.vocab_size}")
     print(f"   隐层大小：{config.hidden_size}")
     print(f"   层数：{config.num_hidden_layers}")
@@ -500,7 +500,7 @@ if __name__ == "__main__":
     # 创建模型
     model = FusionMini(config)
     
-    print(f"\n✅ 模型创建成功")
+    print(f"\n[OK] 模型创建成功")
     print(f"   参数量：{sum(p.numel() for p in model.parameters()) / 1e3:.1f}K")
     
     # 测试前向传播
@@ -517,7 +517,7 @@ if __name__ == "__main__":
         return_dict=True,
     )
     
-    print(f"\n✅ 前向传播测试通过")
+    print(f"\n[OK] 前向传播测试通过")
     print(f"   Loss: {outputs['loss'].item():.4f}")
     print(f"   Logits 形状: {outputs['logits'].shape}")
     
@@ -527,11 +527,11 @@ if __name__ == "__main__":
         max_new_tokens=20,
     )
     
-    print(f"\n✅ 生成测试通过")
+    print(f"\n[OK] 生成测试通过")
     print(f"   生成形状: {generated.shape}")
     
-    print("\n🎉 Fusion Mini 测试完成！")
-    print("\n💡 下一步：")
+    print("\n[DONE] Fusion Mini 测试完成！")
+    print("\n[TIP] 下一步：")
     print("   1. 使用真实数据训练这个 mini 模型")
     print("   2. 验证训练流程")
     print("   3. 然后实现 SBLA 和 Thinking Dial")

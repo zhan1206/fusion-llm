@@ -2,10 +2,10 @@
 Fusion 模型架构
 
 包含：
-- fusion_mini.py: 极简可运行版本（用于验证流程）✅ 已实现
-- fusion_model.py: 完整 Transformer 模型定义（SBLA + Thinking Dial）✅ 已实现
-- sbla_attention.py: SBLA 注意力（滑动分块潜注意力）✅ 已实现
-- thinking_dial.py: 动态推理强度调节器（Thinking Dial）✅ 已实现
+- fusion_mini.py: 极简可运行版本（用于验证流程）[OK] 已实现
+- fusion_model.py: 完整 Transformer 模型定义（SBLA + Thinking Dial）[OK] 已实现
+- sbla_attention.py: SBLA 注意力（滑动分块潜注意力）[OK] 已实现
+- thinking_dial.py: 动态推理强度调节器（Thinking Dial）[OK] 已实现
 
 使用方法：
     # 极简版本（字符级训练验证）

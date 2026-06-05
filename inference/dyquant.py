@@ -432,8 +432,10 @@ class DyQuantConverter:
         
         # 1. 加载模型
         if self.model is None:
-            self.load_model()
-        
+            result = self.load_model()
+            if result is not None:
+                self.model = result
+            
         if self.model is None:
             print(f"[DyQuant] 无法加载模型，返回 None")
             return None

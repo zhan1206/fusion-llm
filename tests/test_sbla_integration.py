@@ -44,8 +44,8 @@ print()
 
 # 4. 验证 SBLA 是否使用
 print("[4] 验证 SBLA 注意力...")
-has_sblla = any("SBLAttention" in str(module) for module in model.modules())
-if has_sblla:
+has_sbla = any("SBLAttention" in str(module) for module in model.modules())
+if has_sbla:
     print("   SBLA 注意力已集成到模型中")
 else:
     print("   未检测到 SBLA 注意力（可能使用了标准注意力）")

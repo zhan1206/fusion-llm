@@ -61,7 +61,7 @@ class BilingualTrueFilter:
         else:
             logger.warning("langid not installed, language detection disabled")
         
-        logger.info(f"✅ 初始化 {lang.upper()} 数据过滤器")
+        logger.info(f"[OK] 初始化 {lang.upper()} 数据过滤器")
         
     def process(self, data: List[str]) -> List[str]:
         """
@@ -73,7 +73,7 @@ class BilingualTrueFilter:
         返回：
             清洗后的文本列表
         """
-        logger.info(f"📊 开始处理 {len(data)} 条数据...")
+        logger.info(f"[CHART] 开始处理 {len(data)} 条数据...")
         
         clean_data = []
         
@@ -99,7 +99,7 @@ class BilingualTrueFilter:
             
             clean_data.append(text)
         
-        logger.info(f"✅ 清洗完成：{len(clean_data)}/{len(data)} 条保留")
+        logger.info(f"[OK] 清洗完成：{len(clean_data)}/{len(data)} 条保留")
         
         return clean_data
     
@@ -141,17 +141,17 @@ class BilingualTrueFilter:
         """
         # 1. 剔除"小编体"
         if self._is_xiaobian_style(text):
-            logger.debug("❌ 剔除小编体")
+            logger.debug("[FAIL] 剔除小编体")
             return False
         
         # 2. 剔除机翻内容
         if self._is_machine_translation(text):
-            logger.debug("❌ 剔除机翻内容")
+            logger.debug("[FAIL] 剔除机翻内容")
             return False
         
         # 3. 剔除低质量内容
         if self._is_low_quality_chinese(text):
-            logger.debug("❌ 剔除低质量内容")
+            logger.debug("[FAIL] 剔除低质量内容")
             return False
         
         return True
@@ -166,12 +166,12 @@ class BilingualTrueFilter:
         """
         # 1. 剔除直译中文语料
         if self._is_translated_from_chinese(text):
-            logger.debug("❌ 剔除直译中文语料")
+            logger.debug("[FAIL] 剔除直译中文语料")
             return False
         
         # 2. 剔除低质量内容
         if self._is_low_quality_english(text):
-            logger.debug("❌ 剔除低质量内容")
+            logger.debug("[FAIL] 剔除低质量内容")
             return False
         
         return True
@@ -298,7 +298,7 @@ class BalancedSampler:
         self.en_data = en_data
         self.zh_ratio = zh_ratio
         
-        logger.info(f"📊 平衡采样器初始化")
+        logger.info(f"[CHART] 平衡采样器初始化")
         logger.info(f"   中文数据：{len(zh_data)} 条")
         logger.info(f"   英文数据：{len(en_data)} 条")
         logger.info(f"   中文占比：{zh_ratio:.1%}")
@@ -331,7 +331,7 @@ class BalancedSampler:
         
         random.shuffle(sampled)
         
-        logger.info(f"✅ 采样 {len(sampled)} 条平衡数据")
+        logger.info(f"[OK] 采样 {len(sampled)} 条平衡数据")
         logger.info(f"   中文：{n_zh} 条，英文：{n_en} 条")
         
         return sampled
@@ -352,10 +352,10 @@ def process_data_pipeline(
         output_path: 输出路径
         n_samples: 采样数量
     """
-    logger.info("🚀 启动双母语数据处理管道...")
+    logger.info("[GO] 启动双母语数据处理管道...")
     
     # 1. 加载原始数据
-    logger.info("📦 加载原始数据...")
+    logger.info("[LOAD] 加载原始数据...")
     
     with open(zh_raw_path, 'r', encoding='utf-8') as f:
         zh_raw = json.load(f)
@@ -367,33 +367,33 @@ def process_data_pipeline(
     logger.info(f"   英文原始数据：{len(en_raw)} 条")
     
     # 2. 清洗中文数据
-    logger.info("\n🧹 清洗中文数据...")
+    logger.info("\n[CLEAN] 清洗中文数据...")
     zh_filter = BilingualTrueFilter(lang="zh")
     zh_clean = zh_filter.process(zh_raw)
     
     # 3. 清洗英文数据
-    logger.info("\n🧹 清洗英文数据...")
+    logger.info("\n[CLEAN] 清洗英文数据...")
     en_filter = BilingualTrueFilter(lang="en")
     en_clean = en_filter.process(en_raw)
     
     # 4. 平衡采样
-    logger.info("\n⚖️  平衡采样...")
+    logger.info("\n[BALANCE][LOGO]  平衡采样...")
     sampler = BalancedSampler(zh_clean, en_clean, zh_ratio=0.5)
     balanced_data = sampler.sample(n_samples)
     
     # 5. 保存
-    logger.info(f"\n💾 保存到 {output_path}...")
+    logger.info(f"\n[SAVE] 保存到 {output_path}...")
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(balanced_data, f, ensure_ascii=False, indent=2)
     
-    logger.info("✅ 数据处理管道完成！")
+    logger.info("[OK] 数据处理管道完成！")
     
     return balanced_data
 
 
 if __name__ == "__main__":
     # 单元测试（模拟数据）
-    print("🧪 测试 Bi-Lingual TrueFilter...")
+    print("[LOGO] 测试 Bi-Lingual TrueFilter...")
     
     # 模拟中文数据
     zh_test_data = [
@@ -413,16 +413,16 @@ if __name__ == "__main__":
     # 测试中文过滤器
     zh_filter = BilingualTrueFilter(lang="zh")
     zh_clean = zh_filter.process(zh_test_data)
-    print(f"✅ 中文过滤：{len(zh_clean)}/{len(zh_test_data)} 条保留")
+    print(f"[OK] 中文过滤：{len(zh_clean)}/{len(zh_test_data)} 条保留")
     
     # 测试英文过滤器
     en_filter = BilingualTrueFilter(lang="en")
     en_clean = en_filter.process(en_test_data)
-    print(f"✅ 英文过滤：{len(en_clean)}/{len(en_test_data)} 条保留")
+    print(f"[OK] 英文过滤：{len(en_clean)}/{len(en_test_data)} 条保留")
     
     # 测试平衡采样
     sampler = BalancedSampler(zh_clean, en_clean, zh_ratio=0.5)
     balanced = sampler.sample(10)
-    print(f"✅ 平衡采样：{len(balanced)} 条")
+    print(f"[OK] 平衡采样：{len(balanced)} 条")
     
-    print("\n✅ Bi-Lingual TrueFilter 测试通过！")
+    print("\n[OK] Bi-Lingual TrueFilter 测试通过！")

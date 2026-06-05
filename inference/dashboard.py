@@ -252,7 +252,8 @@ class InferenceEngine:
                 self.kv_cache = outputs.past_key_values
         
         # Decode only new tokens
-        new_tokens = generated[len(self._tokenize(prompt)[0]):]
+        prompt_len = self._tokenize(prompt).shape[1]
+        new_tokens = generated[prompt_len:]
         return self._detokenize(new_tokens)
     
     def _generate_stream(self, input_ids, cfg) -> Generator:

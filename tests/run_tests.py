@@ -24,7 +24,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-print("🧪 Fusion 项目单元测试")
+print("[LOGO] Fusion 项目单元测试")
 print("=" * 50)
 
 
@@ -54,7 +54,7 @@ class TestSBLAAttention(unittest.TestCase):
         output, _ = attn(hidden_states=x, attention_mask=attention_mask)
         
         self.assertEqual(output.shape, (batch_size, seq_len, hidden_size))
-        print("✅ SBLA 前向传播测试通过")
+        print("[OK] SBLA 前向传播测试通过")
     
     def test_long_sequence(self):
         """测试长序列处理"""
@@ -75,7 +75,7 @@ class TestSBLAAttention(unittest.TestCase):
         output, _ = attn(hidden_states=x, attention_mask=attention_mask)
         
         self.assertEqual(output.shape, (1, 8192, 256))
-        print("✅ SBLA 长序列测试通过")
+        print("[OK] SBLA 长序列测试通过")
 
 
 class TestThinkingDial(unittest.TestCase):
@@ -92,7 +92,7 @@ class TestThinkingDial(unittest.TestCase):
         
         self.assertEqual(depth, 2)
         self.assertEqual(clean, "证明勾股定理")
-        print("✅ Thinking Dial 解析测试通过")
+        print("[OK] Thinking Dial 解析测试通过")
     
     def test_inject_token(self):
         """测试注入控制 token"""
@@ -104,7 +104,7 @@ class TestThinkingDial(unittest.TestCase):
         )
         
         self.assertIn("<|think_depth_1|>", result)
-        print("✅ Thinking Dial 注入测试通过")
+        print("[OK] Thinking Dial 注入测试通过")
 
 
 class TestBilingualFilter(unittest.TestCase):
@@ -126,7 +126,7 @@ class TestBilingualFilter(unittest.TestCase):
             "量子纠缠是量子力学中的一种现象，指两个或多个粒子之间存在一种特殊的关联。"
         ))
         
-        print("✅ 中文过滤器测试通过")
+        print("[OK] 中文过滤器测试通过")
     
     def test_english_filter(self):
         """测试英文质量过滤"""
@@ -139,7 +139,7 @@ class TestBilingualFilter(unittest.TestCase):
             "Quantum entanglement is a phenomenon in quantum mechanics."
         ))
         
-        print("✅ 英文过滤器测试通过")
+        print("[OK] 英文过滤器测试通过")
 
 
 class TestFusionModel(unittest.TestCase):
@@ -159,7 +159,7 @@ class TestFusionModel(unittest.TestCase):
         model = FusionModel(config)
         
         self.assertIsNotNone(model)
-        print("✅ Fusion 模型创建测试通过")
+        print("[OK] Fusion 模型创建测试通过")
     
     def test_forward_pass(self):
         """测试前向传播"""
@@ -186,7 +186,7 @@ class TestFusionModel(unittest.TestCase):
         
         self.assertIn("loss", outputs)
         self.assertIn("logits", outputs)
-        print("✅ Fusion 模型前向传播测试通过")
+        print("[OK] Fusion 模型前向传播测试通过")
 
 
 class TestDataPipeline(unittest.TestCase):
@@ -212,7 +212,7 @@ class TestDataPipeline(unittest.TestCase):
             self.assertIn("think_rank", item)
             self.assertIn(item["think_rank"], [0, 1, 2, 3])
         
-        print("✅ 示例数据格式测试通过")
+        print("[OK] 示例数据格式测试通过")
 
 
 def run_all_tests():
@@ -258,9 +258,9 @@ def run_all_tests():
     success = result.wasSuccessful()
     
     if success:
-        print("\n🎉 所有测试通过！")
+        print("\n[DONE] 所有测试通过！")
     else:
-        print("\n❌ 部分测试失败，请检查代码")
+        print("\n[FAIL] 部分测试失败，请检查代码")
     
     return success
 
