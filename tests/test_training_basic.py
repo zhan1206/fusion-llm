@@ -113,12 +113,9 @@ def test_basic_training():
     print(f"   参数已更新: {is_different}")
     print()
     
-    if not is_different:
-        print("[WARN] 参数未更新！可能有问题")
-        return False
-    
+    assert is_different, "参数未更新！可能有问题"
     print("[TEST] 基本训练测试通过")
-    return True
+    # test passes if no exception
 
 
 if __name__ == "__main__":

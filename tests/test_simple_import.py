@@ -5,7 +5,7 @@ import sys
 import importlib.util
 
 
-def test_import(module_path: str, module_name: str) -> bool:
+def _test_import(module_path: str, module_name: str) -> bool:
     """
     测试单个模块导入
     
@@ -30,7 +30,8 @@ def test_import(module_path: str, module_name: str) -> bool:
         return False
 
 
-def main():
+def test_simple_import():
+    """最简导入测试 - 只测试模块能否正常导入（无 emoji 版本）"""
     print("=" * 60)
     print("Fusion-LLM 最简导入测试")
     print("=" * 60)
@@ -51,7 +52,7 @@ def main():
     results = []
     
     for file_path, module_name in modules_to_test:
-        result = test_import(file_path, module_name)
+        result = _test_import(file_path, module_name)
         results.append((module_name, "PASS" if result else "FAIL"))
     
     # 输出结果
@@ -73,7 +74,7 @@ def main():
     else:
         print("[FAIL] 有测试失败")
     
-    return all_passed
+    assert all_passed, "部分模块导入失败"
 
 
 if __name__ == "__main__":

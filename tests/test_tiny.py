@@ -63,7 +63,7 @@ def test_tiny():
     print()
     
     print("[TEST] 极简测试通过")
-    return True
+    # test passes if no exception
 
 
 if __name__ == "__main__":

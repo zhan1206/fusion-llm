@@ -35,7 +35,7 @@ def test_single_token():
         print(f"   输入形状: {input_ids.shape}")
         print(f"   输出形状: {logits.shape}")
         print("   [PASS] 单个 token 测试通过")
-        return True
+        # test passes if no exception
 
 
 def test_long_sequence():
@@ -67,7 +67,7 @@ def test_long_sequence():
         print(f"   输入形状: {input_ids.shape}")
         print(f"   输出形状: {logits.shape}")
         print("   [PASS] 长序列测试通过")
-        return True
+        # test passes if no exception
 
 
 def test_all_zeros():
@@ -97,7 +97,7 @@ def test_all_zeros():
         print(f"   输入形状: {input_ids.shape}")
         print(f"   输出形状: {logits.shape}")
         print("   [PASS] 全零输入测试通过")
-        return True
+        # test passes if no exception
 
 
 def test_nan_detection():
@@ -130,12 +130,8 @@ def test_nan_detection():
     # 检查 NaN
     has_nan = torch.isnan(loss) or torch.isnan(logits).any()
     
-    if has_nan:
-        print("   [FAIL] 检测到 NaN")
-        return False
-    else:
-        print("   [PASS] 未检测到 NaN")
-        return True
+    assert not has_nan, "检测到 NaN in loss or logits"
+    print("   [PASS] 未检测到 NaN")
 
 
 if __name__ == "__main__":

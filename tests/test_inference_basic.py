@@ -73,7 +73,7 @@ def test_basic_inference():
     print()
     
     print("[TEST] 基本推理测试通过")
-    return True
+    # test passes if no exception
 
 
 if __name__ == "__main__":
