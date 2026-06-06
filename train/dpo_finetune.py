@@ -80,6 +80,13 @@ class DPOTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.step = 0
         self._tokenizer = None  # M-NEW-11 FIX: Initialize to prevent AttributeError
+    
+    @property
+    def tokenizer(self):
+        if self._tokenizer is None:
+            from models.tokenizer import load_tokenizer
+            self._tokenizer = load_tokenizer(self.config.model_path)
+        return self._tokenizer
         self.model = None
         self.ref_model = None
         

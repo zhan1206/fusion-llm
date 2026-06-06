@@ -735,12 +735,19 @@ class ThinkingDialModel(nn.Module):
         返回：
             包含 loss, logits 的字典
         """
-        # 基础模型前向传播（移除 **kwargs 透传，避免 HF 不兼容）
-        base_outputs = self.base_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels,
-        )
+        # [F1 FIX] Apply thinking depth control via learned embedding + gate
+        # Inject thinking_depth bias into the final logits
+        if thinking_depth is not None and hasattr(base_outputs, 'logits'):
+            depth_idx = thinking_depth.long().clamp(0, self.thinking_config.num_thinking_depths - 1)
+            depth_embedding = self.thinking_embedding(depth_idx)  # (batch, hidden_size)
+            # Project depth embedding to vocabulary space
+            depth_bias = nn.functional.linear(
+                depth_embedding.unsqueeze(1),  # (batch, 1, hidden_size)
+                self.thinking_embedding.weight.t(),  # (hidden_size, vocab_size)
+            ).squeeze(1)  # (batch, vocab_size)
+            # Add depth bias to logits, scaled by gate (create new tensor since CausalLMOutputWithPast is immutable)
+            base_outputs.logits = base_outputs.logits + self.thinking_gate * depth_bias.unsqueeze(1)
+        
         return base_outputs
 
 

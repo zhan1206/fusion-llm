@@ -287,6 +287,7 @@ class FusionLayer(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        position_ids: Optional[torch.Tensor] = None,  # [M6 FIX] Added
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         residual = hidden_states
@@ -296,6 +297,7 @@ class FusionLayer(nn.Module):
             attention_mask,
             past_key_value=past_key_value if past_key_value is not None else None,
             use_cache=use_cache,
+            position_ids=position_ids,  # [M6 FIX]
         )
         hidden_states = residual + self.dropout(attn_output)
         
@@ -354,10 +356,15 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         past_key_values: Optional[Tuple] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         use_cache: Optional[bool] = None,
+        position_ids: Optional[torch.Tensor] = None,  # [M6 FIX] Added
         return_dict: Optional[bool] = True,
         **kwargs,
     ) -> CausalLMOutputWithPast:
         use_cache = use_cache if use_cache is not None else self.config.use_cache
+        # [M6 FIX] Extract position_ids from kwargs if not passed explicitly
+        if 'position_ids' in kwargs:
+            position_ids = kwargs.pop('position_ids')
+        # else: keep the explicit position_ids parameter
         
         # Embeddings
         if inputs_embeds is not None:
@@ -381,6 +388,7 @@ class FusionModel(PreTrainedModel, GenerationMixin):
                 attention_mask=attention_mask,
                 past_key_value=layer_past,
                 use_cache=use_cache,
+                position_ids=position_ids,  # [M6 FIX]
             )
             hidden_states = layer_outputs
             if use_cache:
@@ -432,18 +440,26 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         self.eval()
         generated = input_ids.clone()
         past_key_values = None
+        past_seq_len = 0  # [M1 FIX] Track position for RoPE
         
         for _ in range(max_new_tokens):
             if past_key_values is not None:
                 current_input = generated[:, -1:]
+                cur_seq_len = 1
             else:
                 current_input = generated
+                cur_seq_len = generated.shape[1]
+            
+            # [M1 FIX] Compute position_ids for RoPE
+            position_ids = torch.arange(past_seq_len, past_seq_len + cur_seq_len,
+                                       device=device, dtype=torch.long).unsqueeze(0)
             
             outputs = self.forward(
                 input_ids=current_input,
                 past_key_values=past_key_values,
                 use_cache=True,
                 return_dict=True,
+                position_ids=position_ids,  # [M1 FIX]
             )
             
             logits = outputs.logits
@@ -452,6 +468,7 @@ class FusionModel(PreTrainedModel, GenerationMixin):
             next_token_logits = logits[:, -1, :] / max(temperature, 1e-8)
             
             if do_sample and top_p < 1.0:
+                logits_before_mask = next_token_logits.clone()  # [F5 FIX] Save for fallback
                 sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
                 cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
                 sorted_indices_to_remove = cumulative_probs > top_p
@@ -459,6 +476,9 @@ class FusionModel(PreTrainedModel, GenerationMixin):
                 sorted_indices_to_remove[..., 0] = 0
                 indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
                 next_token_logits.masked_fill_(indices_to_remove, float('-inf'))
+                # [F5 FIX] Guard against all-tokens-masked: keep top-1 token
+                if (next_token_logits == float('-inf')).all():
+                    next_token_logits = logits_before_mask
             
             if do_sample:
                 probs = F.softmax(next_token_logits, dim=-1)
@@ -467,6 +487,7 @@ class FusionModel(PreTrainedModel, GenerationMixin):
                 next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
             
             generated = torch.cat([generated, next_token], dim=1)
+            past_seq_len += cur_seq_len  # [M1 FIX] Update position counter
             
             if eos_token_id is not None and (next_token == eos_token_id).all():
                 break
