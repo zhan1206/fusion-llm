@@ -579,12 +579,20 @@ def _fallback_export_gguf(model_path: str, output_path: str) -> Optional[str]:
             merged_state.update(shard_state)
         st.save_file(merged_state, export_path)
     else:
-        # Single-file model
+        # Single-file model: load actual weights, don't save random init
         weight_files = list(model_path_obj.glob("*.safetensors")) + list(model_path_obj.glob("*.bin"))
         if not weight_files:
             logger.error("No model weight files found")
             return None
-        st.save_file(model.state_dict(), export_path)
+        # Load the actual weights
+        import safetensors.torch as st
+        import torch
+        weight_file = weight_files[0]
+        if weight_file.suffix == '.safetensors':
+            state_dict = st.load_file(str(weight_file))
+        else:  # .bin (PyTorch)
+            state_dict = torch.load(str(weight_file), map_location='cpu')
+        st.save_file(state_dict, export_path)
     logger.info(f"Exported model weights to: {export_path}")
     logger.info("NOTE: This is a safetensors export, not GGUF. For Ollama deployment,")
     logger.info("      convert this to GGUF using llama.cpp after ensuring architecture compatibility.")

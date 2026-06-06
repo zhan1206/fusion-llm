@@ -28,7 +28,7 @@ from transformers import (
     AutoTokenizer,
     TrainingArguments,
     Trainer,
-    DataCollatorForSeq2Seq,
+    DataCollatorForLanguageModeling,
     GenerationConfig,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -204,26 +204,61 @@ def create_local_model(
     total_params = sum(p.numel() for p in model.parameters())
     logger.info(f"[create_local_model] 模型参数总量：{total_params / 1e9:.2f}B")
     
-    # C4: Fix quantization - use prepare_model_for_kbit_training for local models
-    # For loading from HF hub with QLoRA, BitsAndBytesConfig would be used with
-    # AutoModelForCausalLM.from_pretrained. Since we create local models, we use
-    # prepare_model_for_kbit_training after model creation.
+    # S-NEW-9 FIX: QLoRA requires proper bitsandbytes integration
+    # For local models created from scratch, we can't use HF's AutoModel quantization.
+    # Instead, we quantize the model directly with bitsandbytes if available.
     if quantize:
         if load_in_4bit:
             logger.info("[create_local_model] Using 4-bit quantization (QLoRA)")
             try:
-                from transformers import BitsAndBytesConfig
-                bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_use_double_quant=True,
-                )
-                logger.info("[create_local_model] BitsAndBytesConfig created for NF4 quantization")
+                import bitsandbytes as bnb
+                # Replace Linear layers with 4-bit quantized versions
+                for name, module in model.named_modules():
+                    if isinstance(module, nn.Linear) and not any(x in name for x in ['lora', 'head', 'embed']):
+                        # Create 4-bit quantized linear (using bitsandbytes nf4)
+                        quantized = bnb.nn.Linear4bit(
+                            module.in_features,
+                            module.out_features,
+                            bias=module.bias is not None,
+                            quant_type='nf4',
+                            compute_dtype=torch.float16
+                        )
+                        # Replace in model
+                        parent_name = '.'.join(name.split('.')[:-1])
+                        child_name = name.split('.')[-1]
+                        if parent_name:
+                            parent = dict(model.named_modules())[parent_name]
+                            setattr(parent, child_name, quantized)
+                        else:
+                            setattr(model, child_name, quantized)
+                logger.info("[create_local_model] 4-bit quantization applied (nf4)")
             except ImportError:
-                logger.warning("bitsandbytes not installed, 4-bit quantization may not work properly")
+                logger.warning("bitsandbytes not installed, 4-bit quantization DISABLED")
+                logger.warning("Model will train in FP32 - install bitsandbytes for true QLoRA")
             model = prepare_model_for_kbit_training(model)
         elif load_in_8bit:
             logger.info("[create_local_model] Using 8-bit quantization")
+            try:
+                import bitsandbytes as bnb
+                # Replace Linear layers with 8-bit quantized versions
+                for name, module in model.named_modules():
+                    if isinstance(module, nn.Linear) and not any(x in name for x in ['lora', 'head', 'embed']):
+                        quantized = bnb.nn.Linear8bitLt(
+                            module.in_features,
+                            module.out_features,
+                            bias=module.bias is not None,
+                            has_fp16_weights=False
+                        )
+                        parent_name = '.'.join(name.split('.')[:-1])
+                        child_name = name.split('.')[-1]
+                        if parent_name:
+                            parent = dict(model.named_modules())[parent_name]
+                            setattr(parent, child_name, quantized)
+                        else:
+                            setattr(model, child_name, quantized)
+                logger.info("[create_local_model] 8-bit quantization applied")
+            except ImportError:
+                logger.warning("bitsandbytes not installed, 8-bit quantization DISABLED")
             model = prepare_model_for_kbit_training(model)
     
     return model, config
@@ -348,11 +383,7 @@ def train(args):
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        data_collator=DataCollatorForSeq2Seq(
-            tokenizer,
-            model=model,
-            padding="longest",
-        ),
+        data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
     )
     
     # 7. 开始训练

@@ -92,10 +92,11 @@ class SBLAttention(nn.Module):
         assert mode in ("pure_sbla", "hybrid"), \
             f"mode 必须是 'pure_sbla' 或 'hybrid'，得到 '{mode}'"
         
-        # Q/K/V 投影 (GQA: K/V use fewer heads)
-        self.q_proj = nn.Linear(hidden_size, num_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(hidden_size, self.num_key_value_heads * self.kv_head_dim, bias=False)
-        self.v_proj = nn.Linear(hidden_size, self.num_key_value_heads * self.kv_head_dim, bias=False)
+        # S-NEW-8 FIX: Remove unused Q/K/V projections (waste ~1.6B params for 32 layers)
+        # FusionAttention handles projections and RoPE, then calls forward_with_qkv
+        # self.q_proj = nn.Linear(hidden_size, num_heads * self.head_dim, bias=False)
+        # self.k_proj = nn.Linear(hidden_size, self.num_key_value_heads * self.kv_head_dim, bias=False)
+        # self.v_proj = nn.Linear(hidden_size, self.num_key_value_heads * self.kv_head_dim, bias=False)
         
         # 潜向量投影（跨块关联）
         self.latent_q_proj = nn.Linear(hidden_size, latent_dim, bias=False)

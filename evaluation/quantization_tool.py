@@ -19,7 +19,7 @@ from torch.quantization import get_default_qconfig, prepare_qat, convert
 sys.path.insert(0, '.')
 
 from evaluation.metrics import ModelEvaluator, EvaluationMetrics
-from inference.dyquant import DyQuant, QATTrainer, QuantizedLinear
+from inference.dyquant import DyQuantConverter, QATTrainer, QuantConfig
 
 
 class QuantizationTool:
@@ -30,6 +30,7 @@ class QuantizationTool:
         model: nn.Module,
         tokenizer = None,
         device: str = "cpu",
+        model_path: Optional[str] = None,
     ):
         """
         初始化量化工具
@@ -38,21 +39,22 @@ class QuantizationTool:
             model: 要量化的模型
             tokenizer: tokenizer（可选）
             device: 设备
+            model_path: 模型路径（用于 DyQuant）
         """
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.model_path = model_path or "fusion-mini"
         self.original_model = None
         self.quantized_model = None
         self.qat_trainer = None
+        self.converter = None
     
     def backup_original_model(self):
         """备份原始模型"""
         print("[QuantTool] 备份原始模型...")
-        self.original_model = type(self.model)(
-            self.model.config if hasattr(self.model, 'config') else None
-        )
-        self.original_model.load_state_dict(self.model.state_dict())
+        import copy
+        self.original_model = copy.deepcopy(self.model)
         print("[QuantTool] 备份完成")
     
     def dynamic_quantize(
@@ -72,31 +74,33 @@ class QuantizationTool:
         """
         print(f"[QuantTool] 开始动态量化（{bits}-bit, {mode}）...")
         
-        dyquant = DyQuant(
-            model=self.model,
-            config=DyQuantConfig(
-                bits=bits,
-                symmetric=(mode == "symmetric"),
-                mixed_precision=False,
-            ),
+        # 使用正确的 QuantConfig API
+        config = QuantConfig(
+            model_path=self.model_path,
+            bits=bits,
+            mixed_precision=False,
         )
         
-        self.quantized_model = dyquant.convert()
-        print(f"[QuantTool] 动态量化完成")
+        self.converter = DyQuantConverter(config)
+        self.converter.model = self.model  # 注入已加载的模型
+        self.quantized_model = self.converter.convert()
         
+        print(f"[QuantTool] 动态量化完成")
         return self.quantized_model
     
     def prepare_qat(
         self,
         learning_rate: float = 1e-4,
         num_epochs: int = 3,
+        train_data: Optional[str] = None,
     ) -> "QATTrainer":
         """
         准备量化感知训练（QAT）
         
         参数：
             learning_rate: 学习率
-            num_epochs: 训练轮数
+            num_epochs: 训练轮数（注意：QATTrainer 没有 num_epochs 参数）
+            train_data: 训练数据路径
             
         返回：
             QATTrainer 对象
@@ -105,16 +109,41 @@ class QuantizationTool:
         print(f"   学习率: {learning_rate}")
         print(f"   训练轮数: {num_epochs}")
         
-        self.qat_trainer = QATTrainer(
-            model=self.model,
-            learning_rate=learning_rate,
-            num_epochs=num_epochs,
+        # 使用正确的 QuantConfig API
+        config = QuantConfig(
+            model_path=self.model_path,
+            bits=4,
+            mixed_precision=True,
         )
+        
+        # QATTrainer 签名：(config, train_data, learning_rate, warmup_steps)
+        self.qat_trainer = QATTrainer(
+            config=config,
+            train_data=train_data,
+            learning_rate=learning_rate,
+            warmup_steps=100,
+        )
+        
+        # 注入已加载的模型，避免重复加载
+        self.qat_trainer.model = self.model
         
         self.qat_trainer.prepare()
         print(f"[QuantTool] QAT 准备完成")
         
+        # 保存 num_epochs 供后续 train() 使用
+        self._qat_epochs = num_epochs
+        
         return self.qat_trainer
+    
+    def run_qat_training(self, epochs: Optional[int] = None):
+        """运行 QAT 训练"""
+        if self.qat_trainer is None:
+            raise ValueError("请先调用 prepare_qat()")
+        
+        epochs = epochs or getattr(self, '_qat_epochs', 3)
+        # QATTrainer.train() 签名：(epochs, lr, batch_size, max_len)
+        self.qat_trainer.train(epochs=epochs)
+        self.quantized_model = self.qat_trainer.qat_model
     
     def evaluate_quantized(
         self,
@@ -250,15 +279,7 @@ class QuantizationTool:
         if format == "safetensors":
             try:
                 import safetensors.torch
-                # 准备状态字典（处理 QuantizedLinear）
-                state_dict = {}
-                for name, module in self.quantized_model.named_modules():
-                    if isinstance(module, QuantizedLinear):
-                        state_dict[f"{name}.q_weight"] = module.q_weight
-                        state_dict[f"{name}.q_scale"] = module.q_scale
-                        state_dict[f"{name}.q_zero_point"] = module.q_zero_point
-                        state_dict[f"{name}.bias"] = module.bias
-                safetensors.torch.save_file(state_dict, path)
+                safetensors.torch.save_model(self.quantized_model, path)
             except ImportError:
                 print(f"[QuantTool] 警告：safetensors 未安装，使用 PyTorch 格式")
                 format = "pytorch"
@@ -267,20 +288,6 @@ class QuantizationTool:
             torch.save(self.quantized_model.state_dict(), path)
         
         print(f"[QuantTool] 保存完成")
-
-
-class DyQuantConfig:
-    """DyQuant 配置（简化版）"""
-    
-    def __init__(
-        self,
-        bits: int = 8,
-        symmetric: bool = True,
-        mixed_precision: bool = False,
-    ):
-        self.bits = bits
-        self.symmetric = symmetric
-        self.mixed_precision = mixed_precision
 
 
 def quantize_model(
@@ -307,7 +314,8 @@ def quantize_model(
         return tool.dynamic_quantize(bits=bits)
     elif method == "qat":
         trainer = tool.prepare_qat(**kwargs)
-        trainer.train(**kwargs)
+        epochs = kwargs.get('num_epochs', 3)
+        trainer.train(epochs=epochs)
         return tool.quantized_model
     else:
         raise ValueError(f"不支持的量化方法: {method}")
@@ -324,6 +332,6 @@ if __name__ == "__main__":
     print()
     print("用法：")
     print("  from evaluation.quantization_tool import QuantizationTool")
-    print("  tool = QuantizationTool(model)")
+    print("  tool = QuantizationTool(model, model_path='fusion-mini')")
     print("  quantized_model = tool.dynamic_quantize(bits=8)")
     print("  metrics = tool.compare_models(texts)")

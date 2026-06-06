@@ -79,6 +79,9 @@ class DPOTrainer:
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.step = 0
+        self._tokenizer = None  # M-NEW-11 FIX: Initialize to prevent AttributeError
+        self.model = None
+        self.ref_model = None
         
     def _get_tokenizer(self) -> object:
         """Get tokenizer with fallback to character-level encoding."""
