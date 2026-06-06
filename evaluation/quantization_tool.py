@@ -279,7 +279,7 @@ class QuantizationTool:
         if format == "safetensors":
             try:
                 import safetensors.torch
-                safetensors.torch.save_model(self.quantized_model, path)
+                safetensors.torch.save_file(self.quantized_model.state_dict(), path)
             except ImportError:
                 print(f"[QuantTool] 警告：safetensors 未安装，使用 PyTorch 格式")
                 format = "pytorch"

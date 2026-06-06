@@ -212,7 +212,8 @@ def create_local_model(
             logger.info("[create_local_model] Using 4-bit quantization (QLoRA)")
             try:
                 import bitsandbytes as bnb
-                # Replace Linear layers with 4-bit quantized versions
+                # S-NEW-12 FIX: Cache module dict to avoid O(n^2) traversal
+                name_to_module = dict(model.named_modules())
                 for name, module in model.named_modules():
                     if isinstance(module, nn.Linear) and not any(x in name for x in ['lora', 'head', 'embed']):
                         # Create 4-bit quantized linear (using bitsandbytes nf4)
@@ -227,7 +228,7 @@ def create_local_model(
                         parent_name = '.'.join(name.split('.')[:-1])
                         child_name = name.split('.')[-1]
                         if parent_name:
-                            parent = dict(model.named_modules())[parent_name]
+                            parent = name_to_module[parent_name]
                             setattr(parent, child_name, quantized)
                         else:
                             setattr(model, child_name, quantized)
@@ -235,12 +236,15 @@ def create_local_model(
             except ImportError:
                 logger.warning("bitsandbytes not installed, 4-bit quantization DISABLED")
                 logger.warning("Model will train in FP32 - install bitsandbytes for true QLoRA")
+                # M-NEW-16 FIX: Skip prepare_model_for_kbit_training when bnb unavailable
+                return model, config
             model = prepare_model_for_kbit_training(model)
         elif load_in_8bit:
             logger.info("[create_local_model] Using 8-bit quantization")
             try:
                 import bitsandbytes as bnb
-                # Replace Linear layers with 8-bit quantized versions
+                # S-NEW-12 FIX: Cache module dict to avoid O(n^2) traversal
+                name_to_module = dict(model.named_modules())
                 for name, module in model.named_modules():
                     if isinstance(module, nn.Linear) and not any(x in name for x in ['lora', 'head', 'embed']):
                         quantized = bnb.nn.Linear8bitLt(
@@ -252,13 +256,15 @@ def create_local_model(
                         parent_name = '.'.join(name.split('.')[:-1])
                         child_name = name.split('.')[-1]
                         if parent_name:
-                            parent = dict(model.named_modules())[parent_name]
+                            parent = name_to_module[parent_name]
                             setattr(parent, child_name, quantized)
                         else:
                             setattr(model, child_name, quantized)
                 logger.info("[create_local_model] 8-bit quantization applied")
             except ImportError:
                 logger.warning("bitsandbytes not installed, 8-bit quantization DISABLED")
+                # M-NEW-16 FIX: Skip prepare_model_for_kbit_training when bnb unavailable
+                return model, config
             model = prepare_model_for_kbit_training(model)
     
     return model, config
@@ -295,7 +301,10 @@ def apply_lora(
     """
     if target_modules is None:
         # 目标模块（根据 FusionModel 的实际层名）
-        target_modules = ["q_proj", "v_proj", "k_proj", "out_proj", "gate_proj", "up_proj", "down_proj"]
+        # L-NEW-2 FIX: Remove "out_proj" (doesn't match model);
+        # FusionModel follows LLaMA naming: q_proj/k_proj/v_proj/o_proj for attention,
+        # gate_proj/up_proj/down_proj for MLP
+        target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     
     logger.info(f"[apply_lora] 应用 LoRA（rank={lora_rank}, alpha={lora_alpha}）")
     logger.info(f"[apply_lora] 目标模块：{target_modules}")

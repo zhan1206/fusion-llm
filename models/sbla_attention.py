@@ -288,9 +288,8 @@ class SBLAttention(nn.Module):
         device = hidden_states.device
         
         # ========== 1. Q/K/V 投影 ==========
-        # S-NEW-8: Q/K/V projections moved to FusionAttention (for RoPE)
-        # If you see this error, use FusionAttention or forward_with_qkv() instead
-        if not hasattr(self, 'q_proj') or self.q_proj is None:
+        # S-NEW-8 FIX + M-NEW-15 FIX: Q/K/V projections removed; guard with clear check
+        if not hasattr(self, 'q_proj'):
             raise RuntimeError(
                 "SBLAttention.forward() requires Q/K/V projections, but they were "
                 "removed to avoid parameter waste. Use FusionAttention wrapper or "
@@ -591,109 +590,109 @@ SlidingBlockLatentAttention = SBLAttention
 
 
 if __name__ == "__main__":
-    # 单元测试
-    print("[TEST] Testing SBLA Attention...")
+    # F-NEW-11 FIX: Rewrite self-test to use forward_with_qkv() since
+    # Q/K/V projections were removed (S-NEW-8)
+    print("[TEST] SBLA Attention v3 - Self Test")
     
-    # 测试 1：基本功能
+    def _make_qkv(sbla, hidden_states):
+        """Helper: create Q/K/V tensors matching sbla dimensions."""
+        B, S, _ = hidden_states.shape
+        Q = hidden_states.new_empty(B, sbla.num_heads, S, sbla.head_dim)
+        nn.init.xavier_uniform_(Q.reshape(B * sbla.num_heads, S, sbla.head_dim))
+        K = hidden_states.new_empty(B, sbla.num_key_value_heads, S, sbla.kv_head_dim)
+        nn.init.xavier_uniform_(K.reshape(B * sbla.num_key_value_heads, S, sbla.kv_head_dim))
+        V = hidden_states.new_empty(B, sbla.num_key_value_heads, S, sbla.kv_head_dim)
+        nn.init.xavier_uniform_(V.reshape(B * sbla.num_key_value_heads, S, sbla.kv_head_dim))
+        return Q, K, V
+    
+    # Test 1: Basic forward pass
     print("\n[Test 1] Basic forward pass")
     sbla = SBLAttention(
-        hidden_size=128,
-        num_heads=4,
-        block_size=16,
-        latent_dim=32,
-        window_size=16,
-        mode="pure_sbla",
+        hidden_size=128, num_heads=4, block_size=16,
+        latent_dim=32, window_size=16, mode="pure_sbla",
     )
-    
-    batch_size = 2
-    seq_len = 48
-    
+    batch_size, seq_len = 2, 48
     hidden_states = torch.randn(batch_size, seq_len, 128)
     attention_mask = torch.ones(batch_size, 1, 1, seq_len)
+    Q, K, V = _make_qkv(sbla, hidden_states)
     
-    output, cache = sbla.forward(hidden_states=hidden_states, attention_mask=attention_mask)
-    
-    assert output.shape == (batch_size, seq_len, 128), \
-        f"Output shape mismatch: {output.shape}"
-    assert not torch.isnan(output).any(), "Output contains NaN!"
+    output, cache = sbla.forward_with_qkv(Q, K, V, attention_mask=attention_mask)
+    assert output.shape == (batch_size, seq_len, 128), f"Shape: {output.shape}"
+    assert not torch.isnan(output).any(), "NaN!"
     print(f"   OK: shape={output.shape}, no NaN")
     
-    # 测试 2：Causal mask 正确性
+    # Test 2: Causal mask correctness
     print("\n[Test 2] Causal mask correctness")
     sbla.eval()
     with torch.no_grad():
         test_input = torch.randn(1, 20, 128)
-        out1, _ = sbla(test_input)
-        out2, _ = sbla(test_input)
-        assert torch.allclose(out1, out2), "Non-deterministic output in eval mode!"
+        Q2, K2, V2 = _make_qkv(sbla, test_input)
+        out1, _ = sbla.forward_with_qkv(Q2, K2, V2)
+        out2, _ = sbla.forward_with_qkv(Q2, K2, V2)
+        assert torch.allclose(out1, out2), "Non-deterministic!"
     print("   OK: eval mode deterministic")
     
-    # 测试 3：Padding 处理
+    # Test 3: Padding handling
     print("\n[Test 3] Padding handling")
     mask = torch.ones(batch_size, 1, 1, seq_len)
     mask[0, :, :, 30:] = 0.0
-    
-    output_with_pad, _ = sbla.forward(
-        hidden_states=hidden_states,
-        attention_mask=mask,
-    )
-    
-    assert output_with_pad.shape == (batch_size, seq_len, 128), \
-        f"Padded output shape mismatch: {output_with_pad.shape}"
+    output_with_pad, _ = sbla.forward_with_qkv(Q, K, V, attention_mask=mask)
+    assert output_with_pad.shape == (batch_size, seq_len, 128)
     assert not torch.isnan(output_with_pad).any(), "NaN with padding!"
     print(f"   OK: padding handled correctly")
     
-    # 测试 4：Hybrid 模式
+    # Test 4: Hybrid mode
     print("\n[Test 4] Hybrid mode")
     sbla_hybrid = SBLAttention(
-        hidden_size=128,
-        num_heads=4,
-        block_size=16,
-        latent_dim=32,
-        mode="hybrid",
+        hidden_size=128, num_heads=4, block_size=16,
+        latent_dim=32, mode="hybrid",
     )
-    
-    output_hybrid, _ = sbla_hybrid(hidden_states, attention_mask)
+    Qh, Kh, Vh = _make_qkv(sbla_hybrid, hidden_states)
+    output_hybrid, _ = sbla_hybrid.forward_with_qkv(Qh, Kh, Vh, attention_mask=attention_mask)
     assert output_hybrid.shape == (batch_size, seq_len, 128)
     assert not torch.isnan(output_hybrid).any()
-    print(f"   OK: hybrid mode works")
+    print("   OK: hybrid mode works")
     
-    # 测试 5：KV Cache
+    # Test 5: KV Cache incremental generation
     print("\n[Test 5] KV Cache incremental generation")
     sbla_kv = SBLAttention(
-        hidden_size=128, num_heads=4, block_size=16, latent_dim=32, mode="hybrid",
+        hidden_size=128, num_heads=4, block_size=16,
+        latent_dim=32, mode="hybrid",
     )
     sbla_kv.eval()
     with torch.no_grad():
-        # Full forward
-        full_out, full_cache = sbla_kv(hidden_states[:, :20, :], torch.ones(2, 20), use_cache=True)
-        assert full_cache is not None, "Cache should be returned"
-        assert full_cache[0].shape[2] == 20, f"Cache K shape: {full_cache[0].shape}"
-        # Incremental step
-        inc_out, inc_cache = sbla_kv(
-            hidden_states[:, 20:21, :], torch.ones(2, 1),
-            past_key_value=full_cache, use_cache=True,
-        )
-        assert inc_out.shape == (2, 1, 128), f"Incremental output shape: {inc_out.shape}"
-        assert inc_cache[0].shape[2] == 21, f"Incremental cache shape: {inc_cache[0].shape}"
+        hs20 = hidden_states[:, :20, :]
+        Q5a, K5a, V5a = _make_qkv(sbla_kv, hs20)
+        full_out, full_cache = sbla_kv.forward_with_qkv(
+            Q5a, K5a, V5a, torch.ones(2, 1, 1, 20), use_cache=True)
+        assert full_cache is not None
+        assert full_cache[0].shape[2] == 20
+        hs1 = hidden_states[:, 20:21, :]
+        Q5b, K5b, V5b = _make_qkv(sbla_kv, hs1)
+        inc_out, inc_cache = sbla_kv.forward_with_qkv(
+            Q5b, K5b, V5b, torch.ones(2, 1, 1, 1),
+            past_key_value=full_cache, use_cache=True)
+        assert inc_out.shape == (2, 1, 128)
+        assert inc_cache[0].shape[2] == 21
     print("   OK: KV cache works")
     
-    # 测试 6：GQA
+    # Test 6: GQA
     print("\n[Test 6] GQA (grouped-query attention)")
     sbla_gqa = SBLAttention(
-        hidden_size=128, num_heads=4, block_size=16, latent_dim=32,
-        num_key_value_heads=2, mode="hybrid",
+        hidden_size=128, num_heads=4, block_size=16,
+        latent_dim=32, num_key_value_heads=2, mode="hybrid",
     )
     sbla_gqa.eval()
     with torch.no_grad():
-        gqa_out, _ = sbla_gqa(hidden_states, torch.ones(2, 48))
+        Q6, K6, V6 = _make_qkv(sbla_gqa, hidden_states)
+        gqa_out, _ = sbla_gqa.forward_with_qkv(Q6, K6, V6, torch.ones(2, 1, 1, 48))
         assert gqa_out.shape == (2, 48, 128)
         assert not torch.isnan(gqa_out).any()
     print("   OK: GQA works")
     
-    # 测试 7：参数量对比
+    # Test 7: Parameter count
     std_params = sum(p.numel() for p in sbla.parameters())
     gqa_params = sum(p.numel() for p in sbla_gqa.parameters())
-    print(f"\n[Test 7] Parameter count: standard={std_params:,}, GQA={gqa_params:,}")
+    print(f"\n[Test 7] Param count: std={std_params:,}, GQA={gqa_params:,}")
     
-    print("\n[ALL TESTS PASSED] SBLA Attention v3 with KV Cache + GQA verified.")
+    print("\n[ALL TESTS PASSED] SBLA Attention v3 verified.")
