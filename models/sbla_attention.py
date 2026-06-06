@@ -288,6 +288,14 @@ class SBLAttention(nn.Module):
         device = hidden_states.device
         
         # ========== 1. Q/K/V 投影 ==========
+        # S-NEW-8: Q/K/V projections moved to FusionAttention (for RoPE)
+        # If you see this error, use FusionAttention or forward_with_qkv() instead
+        if not hasattr(self, 'q_proj') or self.q_proj is None:
+            raise RuntimeError(
+                "SBLAttention.forward() requires Q/K/V projections, but they were "
+                "removed to avoid parameter waste. Use FusionAttention wrapper or "
+                "call sbla.forward_with_qkv(Q, K, V, ...) instead."
+            )
         Q = self.q_proj(hidden_states)  # (batch, seq_len, num_heads * head_dim)
         K = self.k_proj(hidden_states)  # (batch, seq_len, num_kv_heads * head_dim)
         V = self.v_proj(hidden_states)
