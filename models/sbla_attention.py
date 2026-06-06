@@ -81,7 +81,7 @@ class SBLAttention(nn.Module):
         self.block_size = block_size
         self.latent_dim = latent_dim
         self.head_dim = hidden_size // num_heads
-        self.kv_head_dim = self.head_dim  # Same head dim for K/V
+        self.kv_head_dim = hidden_size // self.num_key_value_heads
         self.window_size = window_size or block_size  # 默认窗口=块大小
         self.mode = mode
         
@@ -103,6 +103,9 @@ class SBLAttention(nn.Module):
         self.latent_k_proj = nn.Linear(hidden_size, latent_dim, bias=False)
         self.latent_v_proj = nn.Linear(hidden_size, latent_dim, bias=False)
         self.latent_out_proj = nn.Linear(latent_dim, hidden_size, bias=False)
+        
+        # V 投影（GQA 支持：从 num_heads * kv_head_dim 投影到 hidden_size）
+        self.v_to_hidden_proj = nn.Linear(self.num_heads * self.kv_head_dim, hidden_size, bias=False)
         
         # 输出投影
         self.out_proj = nn.Linear(hidden_size, hidden_size, bias=False)
@@ -549,7 +552,16 @@ class SBLAttention(nn.Module):
 
         # Reconstruct hidden_states from V for block latent computation
         V_full = self._repeat_kv(V, self.num_kv_groups) if self.num_kv_groups > 1 else V
-        hidden_states_approx = V_full.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
+        
+        # Project V_full to hidden_size for latent computation
+        # V_full: (batch, num_heads, seq_len, kv_head_dim)
+        # -> transpose to (batch, seq_len, num_heads, kv_head_dim)
+        # -> view to (batch, seq_len, num_heads * kv_head_dim)
+        # -> project to (batch, seq_len, hidden_size)
+        batch_size_v = V_full.size(0)
+        seq_len_v = V_full.size(2)
+        V_reshaped = V_full.transpose(1, 2).contiguous().view(batch_size_v, seq_len_v, -1)  # (batch, seq_len, num_heads * kv_head_dim)
+        hidden_states_approx = self.v_to_hidden_proj(V_reshaped)  # (batch, seq_len, hidden_size)
 
         latent_mask = attention_mask
         if attention_mask is not None and attention_mask.dim() == 2:
@@ -570,11 +582,13 @@ class SBLAttention(nn.Module):
         latent_context = torch.matmul(latent_attn_probs, blk_v)
         latent_output = self.latent_out_proj(latent_context)
 
+        # Expand latent_output to match seq_len: (batch, num_blocks, hidden_size)
+        # -> (batch, num_blocks, block_size, hidden_size)
+        # -> (batch, num_blocks * block_size, hidden_size)
+        # -> trim to (batch, seq_len, hidden_size)
         latent_output = latent_output.unsqueeze(2).expand(
             -1, -1, self.block_size, -1
-        ).contiguous().view(batch_size, num_blocks * self.block_size, self.hidden_size)
-
-        latent_output = latent_output[:, :seq_len, :]
+        ).contiguous().view(batch_size, -1, self.hidden_size)[:, :seq_len, :]
 
         gate_value = torch.sigmoid(self.gate)
         output = output_std + gate_value * latent_output
