@@ -171,71 +171,6 @@ class FusionMiniEmbeddings(nn.Module):
         return embeddings
 
 
-class FusionMiniAttention(nn.Module):
-    """
-    Fusion Mini 注意力层（标准多头注意力）
-    """
-    
-    def __init__(self, config: FusionMiniConfig):
-        super().__init__()
-        
-        self.num_attention_heads = config.num_attention_heads
-        self.attention_head_size = config.hidden_size // config.num_attention_heads
-        self.all_head_size = config.hidden_size
-        
-        self.query = nn.Linear(config.hidden_size, self.all_head_size)
-        self.key = nn.Linear(config.hidden_size, self.all_head_size)
-        self.value = nn.Linear(config.hidden_size, self.all_head_size)
-        
-        self.out = nn.Linear(config.hidden_size, config.hidden_size)
-        self.dropout = nn.Dropout(0.1)
-        
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        参数：
-            hidden_states: (batch, seq_len, hidden_size)
-            attention_mask: (batch, 1, 1, seq_len)
-        """
-        batch_size, seq_len, _ = hidden_states.shape
-        
-        # 线性投影
-        q = self.query(hidden_states)
-        k = self.key(hidden_states)
-        v = self.value(hidden_states)
-        
-        # 重塑为多头
-        q = q.view(batch_size, seq_len, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
-        k = k.view(batch_size, seq_len, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
-        v = v.view(batch_size, seq_len, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
-        
-        # 计算注意力分数
-        attention_scores = torch.matmul(q, k.transpose(-1, -2))
-        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
-        
-        # 应用注意力掩码
-        if attention_mask is not None:
-            attention_scores = attention_scores + attention_mask
-        
-        # Softmax
-        attention_probs = F.softmax(attention_scores, dim=-1)
-        attention_probs = self.dropout(attention_probs)
-        
-        # 加权求和
-        context = torch.matmul(attention_probs, v)
-        
-        # 重塑回原始形状
-        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.all_head_size)
-        
-        # 输出线性层
-        output = self.out(context)
-        
-        return output
-
-
 class FusionMiniLayer(nn.Module):
     """
     Fusion Mini Transformer 层
@@ -288,10 +223,12 @@ class FusionMiniLayer(nn.Module):
         batch_size, seq_len, _ = hidden_states.shape
         num_heads = self.sbla_attention.num_heads
         head_dim = self.sbla_attention.head_dim
+        num_kv_heads = self.sbla_attention.num_key_value_heads
+        kv_head_dim = self.sbla_attention.kv_head_dim
         
         Q = self.query(hidden_states).view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
-        K = self.key(hidden_states).view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
-        V = self.value(hidden_states).view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+        K = self.key(hidden_states).view(batch_size, seq_len, num_kv_heads, kv_head_dim).transpose(1, 2)
+        V = self.value(hidden_states).view(batch_size, seq_len, num_kv_heads, kv_head_dim).transpose(1, 2)
         
         # SBLA attention with forward_with_qkv (avoids Q/K/V projection in SBLAttention)
         attn_output, present_key_value = self.sbla_attention.forward_with_qkv(

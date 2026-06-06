@@ -21,10 +21,10 @@ Fusion 模型全参数微调脚本
 """
 
 import argparse
-import torch
 import logging
-from typing import Optional
+import torch
 import torch.nn as nn
+from typing import Optional
 
 # H8-H9: Wrap optional imports in try/except
 try:
@@ -36,7 +36,7 @@ except ImportError:
 from transformers import (
     get_linear_schedule_with_warmup,
 )
-from models.tokenizer import get_tokenizer, get_effective_vocab_size
+from models.tokenizer import get_tokenizer
 from torch.utils.data import Dataset, DataLoader
 import json
 import os

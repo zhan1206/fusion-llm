@@ -551,13 +551,9 @@ class SBLAttention(nn.Module):
             return output, present_key_value
 
         # Reconstruct hidden_states from V for block latent computation
-        V_full = self._repeat_kv(V, self.num_kv_groups) if self.num_kv_groups > 1 else V
-        
-        # Project V_full to hidden_size for latent computation
-        # V_full: (batch, num_heads, seq_len, kv_head_dim)
-        # -> transpose to (batch, seq_len, num_heads, kv_head_dim)
-        # -> view to (batch, seq_len, num_heads * kv_head_dim)
-        # -> project to (batch, seq_len, hidden_size)
+        # V is already expanded to (B, num_heads, S, kv_head_dim) at line ~492
+        # No need to re-expand. v_to_hidden_proj expects num_heads * kv_head_dim input.
+        V_full = V
         batch_size_v = V_full.size(0)
         seq_len_v = V_full.size(2)
         V_reshaped = V_full.transpose(1, 2).contiguous().view(batch_size_v, seq_len_v, -1)  # (batch, seq_len, num_heads * kv_head_dim)
