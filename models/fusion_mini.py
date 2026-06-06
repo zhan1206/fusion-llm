@@ -249,6 +249,11 @@ class FusionMiniLayer(nn.Module):
         # Input RMSNorm (pre-norm, same as FusionModel)
         self.input_layernorm = RMSNorm(config.hidden_size, eps=1e-6)
         
+        # Q/K/V projections for SBLA (avoids Q/K/V in SBLAttention)
+        self.query = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.key = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.value = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        
         # SBLA Attention
         self.sbla_attention = SBLAttention(
             hidden_size=config.hidden_size,
@@ -278,10 +283,22 @@ class FusionMiniLayer(nn.Module):
         # Pre-norm + SBLA Attention + residual
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        attn_output, present_key_value = self.sbla_attention(
-            hidden_states, attention_mask,
+        
+        # Compute Q/K/V projections and reshape to 4D for SBLA
+        batch_size, seq_len, _ = hidden_states.shape
+        num_heads = self.sbla_attention.num_heads
+        head_dim = self.sbla_attention.head_dim
+        
+        Q = self.query(hidden_states).view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+        K = self.key(hidden_states).view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+        V = self.value(hidden_states).view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+        
+        # SBLA attention with forward_with_qkv (avoids Q/K/V projection in SBLAttention)
+        attn_output, present_key_value = self.sbla_attention.forward_with_qkv(
+            Q, K, V, attention_mask,
             past_key_value=past_key_value, use_cache=use_cache,
         )
+        
         hidden_states = residual + self.dropout(attn_output)
         
         # Pre-norm + SwiGLU FFN + residual

@@ -22,9 +22,17 @@ Fusion 模型全参数微调脚本
 
 import argparse
 import torch
+import logging
 from typing import Optional
 import torch.nn as nn
-import deepspeed
+
+# H8-H9: Wrap optional imports in try/except
+try:
+    import deepspeed
+except ImportError:
+    deepspeed = None
+    logging.warning("DeepSpeed not installed. DeepSpeed features will be unavailable.")
+
 from transformers import (
     get_linear_schedule_with_warmup,
 )
