@@ -668,7 +668,19 @@ class GRPOTrainer:
                 texts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
                 all_texts.extend(texts)
         
-        return torch.cat(all_ids, dim=0), all_texts
+        # Pad all outputs to same length before cat (different samples may have different gen lengths due to EOS)
+        max_len = max(t.shape[1] for t in all_ids)
+        pad_token = getattr(self.model, 'config', None)
+        pad_token = getattr(pad_token, 'pad_token_id', 0) if pad_token else 0
+        all_ids_padded = []
+        for t in all_ids:
+            if t.shape[1] < max_len:
+                pad = torch.full((t.shape[0], max_len - t.shape[1]), pad_token,
+                                 dtype=t.dtype, device=t.device)
+                t = torch.cat([t, pad], dim=1)
+            all_ids_padded.append(t)
+        
+        return torch.cat(all_ids_padded, dim=0), all_texts
 
     def train_step(
         self,
