@@ -142,6 +142,9 @@ class FusionDataset(Dataset):
         }
 
 
+from train.model_utils import create_local_model as _create_local_model_from_utils
+
+
 def create_local_model(
     model_size: str = "8B",
     quantize: bool = False,
@@ -149,75 +152,23 @@ def create_local_model(
     load_in_8bit: bool = False,
     vocab_size_override: int | None = None,
 ):
-    """
-    创建本地 FusionModel（无需预训练权重）
-    
-    参数：
-        model_size: "0.5B", "1.5B", "8B", "14B"
-        quantize: 是否量化
-        load_in_4bit: 4-bit 量化（NF4）
-        load_in_8bit: 8-bit 量化
-        vocab_size_override: S3 fix - sync vocab to actual tokenizer size
-    """
-    # 模型配置（基于尺寸）
-    model_configs = {
-        "0.5B": dict(vocab_size=32000, hidden_size=2048, num_hidden_layers=16,
-                     num_attention_heads=16, num_key_value_heads=8, intermediate_size=5504),
-        "1.5B": dict(vocab_size=32000, hidden_size=3072, num_hidden_layers=24,
-                     num_attention_heads=24, num_key_value_heads=8, intermediate_size=8192),
-        "8B": dict(vocab_size=100000, hidden_size=4096, num_hidden_layers=32,
-                   num_attention_heads=32, num_key_value_heads=8, intermediate_size=11008),
-        "14B": dict(vocab_size=100000, hidden_size=5120, num_hidden_layers=40,
-                    num_attention_heads=40, num_key_value_heads=8, intermediate_size=13824),
-    }
-    
-    if model_size not in model_configs:
-        raise ValueError(f"不支持的模型大小：{model_size}，可选：{list(model_configs.keys())}")
-    
-    config_dict = model_configs[model_size]
-    
-    # S3 fix: override vocab_size to match actual tokenizer
-    if vocab_size_override is not None:
-        config_dict['vocab_size'] = vocab_size_override
-    
-    # 通用配置
-    common_config = dict(
-        block_size=512,
-        latent_dim=64,
-        window_size=2048,
-        sbla_mode="hybrid",
-        rms_norm_eps=1e-6,
-        rope_theta=10000.0,
-        tie_word_embeddings=False,
-        enable_thinking_dial=True,
-        num_thinking_depths=4,
+    """S4 FIX: Delegate to shared model_utils.create_local_model, then apply quantization."""
+    model = _create_local_model_from_utils(
+        model_size=model_size,
+        torch_dtype=torch.bfloat16,
+        vocab_size_override=vocab_size_override,
     )
-    
-    config = FusionConfig(**config_dict, **common_config)
-    
-    logger.info(f"[create_local_model] 创建 Fusion-{model_size} 模型")
-    logger.info(f"  vocab_size={config.vocab_size}, hidden_size={config.hidden_size}, "
-                f"layers={config.num_hidden_layers}, heads={config.num_attention_heads}")
-    
-    # 创建模型（随机初始化）
-    model = FusionModel(config)
-    
-    total_params = sum(p.numel() for p in model.parameters())
-    logger.info(f"[create_local_model] 模型参数总量：{total_params / 1e9:.2f}B")
-    
+    config = model.config
+
     # S-NEW-9 FIX: QLoRA requires proper bitsandbytes integration
-    # For local models created from scratch, we can't use HF's AutoModel quantization.
-    # Instead, we quantize the model directly with bitsandbytes if available.
     if quantize:
         if load_in_4bit:
             logger.info("[create_local_model] Using 4-bit quantization (QLoRA)")
             try:
                 import bitsandbytes as bnb
-                # S-NEW-12 FIX: Cache module dict to avoid O(n^2) traversal
                 name_to_module = dict(model.named_modules())
                 for name, module in model.named_modules():
                     if isinstance(module, nn.Linear) and not any(x in name for x in ['lora', 'head', 'embed']):
-                        # Create 4-bit quantized linear (using bitsandbytes nf4)
                         quantized = bnb.nn.Linear4bit(
                             module.in_features,
                             module.out_features,
@@ -225,7 +176,6 @@ def create_local_model(
                             quant_type='nf4',
                             compute_dtype=torch.float16
                         )
-                        # Replace in model
                         parent_name = '.'.join(name.split('.')[:-1])
                         child_name = name.split('.')[-1]
                         if parent_name:
@@ -237,14 +187,12 @@ def create_local_model(
             except ImportError:
                 logger.warning("bitsandbytes not installed, 4-bit quantization DISABLED")
                 logger.warning("Model will train in FP32 - install bitsandbytes for true QLoRA")
-                # M-NEW-16 FIX: Skip prepare_model_for_kbit_training when bnb unavailable
                 return model, config
             model = prepare_model_for_kbit_training(model)
         elif load_in_8bit:
             logger.info("[create_local_model] Using 8-bit quantization")
             try:
                 import bitsandbytes as bnb
-                # S-NEW-12 FIX: Cache module dict to avoid O(n^2) traversal
                 name_to_module = dict(model.named_modules())
                 for name, module in model.named_modules():
                     if isinstance(module, nn.Linear) and not any(x in name for x in ['lora', 'head', 'embed']):
@@ -264,10 +212,9 @@ def create_local_model(
                 logger.info("[create_local_model] 8-bit quantization applied")
             except ImportError:
                 logger.warning("bitsandbytes not installed, 8-bit quantization DISABLED")
-                # M-NEW-16 FIX: Skip prepare_model_for_kbit_training when bnb unavailable
                 return model, config
             model = prepare_model_for_kbit_training(model)
-    
+
     return model, config
 
 
@@ -305,7 +252,13 @@ def apply_lora(
         # L-NEW-2 FIX: Remove "out_proj" (doesn't match model);
         # FusionModel follows LLaMA naming: q_proj/k_proj/v_proj/o_proj for attention,
         # gate_proj/up_proj/down_proj for MLP
-        target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        # S3 FIX: Include SBLAttention latent projections for proper LoRA coverage
+        target_modules = [
+            "q_proj", "v_proj", "k_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+            "latent_q_proj", "latent_k_proj", "latent_v_proj", "latent_out_proj",
+            "v_to_hidden_proj",
+        ]
     
     logger.info(f"[apply_lora] 应用 LoRA（rank={lora_rank}, alpha={lora_alpha}）")
     logger.info(f"[apply_lora] 目标模块：{target_modules}")

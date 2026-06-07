@@ -118,57 +118,21 @@ class FusionFullFinetuneDataset(Dataset):
         }
 
 
+from train.model_utils import create_local_model as _create_local_model_from_utils
+
+
 def create_local_model(
     model_size: str = "8B",
     torch_dtype: torch.dtype = torch.bfloat16,
     vocab_size_override: Optional[int] = None,
 ):
-    """
-    创建本地 FusionModel（无需预训练权重）
-    """
-    model_configs = {
-        "0.5B": dict(vocab_size=32000, hidden_size=2048, num_hidden_layers=16,
-                     num_attention_heads=16, num_key_value_heads=8, intermediate_size=5504),
-        "1.5B": dict(vocab_size=32000, hidden_size=3072, num_hidden_layers=24,
-                     num_attention_heads=24, num_key_value_heads=8, intermediate_size=8192),
-        "8B": dict(vocab_size=100000, hidden_size=4096, num_hidden_layers=32,
-                   num_attention_heads=32, num_key_value_heads=8, intermediate_size=11008),
-        "14B": dict(vocab_size=100000, hidden_size=5120, num_hidden_layers=40,
-                    num_attention_heads=40, num_key_value_heads=8, intermediate_size=13824),
-    }
-    
-    if model_size not in model_configs:
-        raise ValueError(f"不支持的模型大小：{model_size}")
-    
-    config_dict = model_configs[model_size]
-    
-    # S3 fix: override vocab_size to match actual tokenizer
-    if vocab_size_override is not None:
-        config_dict['vocab_size'] = vocab_size_override
-    
-    common_config = dict(
-        block_size=512,
-        latent_dim=64,
-        window_size=2048,
-        sbla_mode="hybrid",
-        rms_norm_eps=1e-6,
-        rope_theta=10000.0,
-        tie_word_embeddings=False,
-        enable_thinking_dial=True,
-        num_thinking_depths=4,
+    """S4 FIX: Delegate to shared model_utils.create_local_model, preserving API."""
+    model = _create_local_model_from_utils(
+        model_size=model_size,
+        torch_dtype=torch_dtype,
+        vocab_size_override=vocab_size_override,
     )
-    
-    config = FusionConfig(**config_dict, **common_config)
-    
-    logger.info(f"[create_local_model] 创建 Fusion-{model_size}（随机初始化）")
-    logger.info(f"  hidden_size={config.hidden_size}, layers={config.num_hidden_layers}, "
-                f"heads={config.num_attention_heads}")
-    
-    model = FusionModel(config)
-    
-    total_params = sum(p.numel() for p in model.parameters())
-    logger.info(f"[create_local_model] 参数总量：{total_params / 1e9:.2f}B")
-    
+    config = model.config
     return model, config
 
 

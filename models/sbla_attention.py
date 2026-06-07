@@ -393,24 +393,26 @@ class SBLAttention(nn.Module):
             # Incremental step: use cached block latents if available
             if hasattr(self, '_cached_block_latents') and self._cached_block_latents is not None:
                 cached_q, cached_k, cached_v, cached_num_blocks = self._cached_block_latents
-                # Compute latent query for the single new token
-                # V_current is the single-step V before KV concat: (B, num_kv_heads, 1, kv_head_dim)
-                # After _repeat_kv on V_current it would be (B, num_heads, 1, head_dim)
-                V_current_expanded = self._repeat_kv(V_current, self.num_kv_groups)
-                V_reshaped_inc = V_current_expanded.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
-                hidden_approx_inc = self.v_to_hidden_proj(V_reshaped_inc)  # (batch, 1, hidden_size)
-                blk_q_inc = self.latent_q_proj(hidden_approx_inc)  # (batch, 1, latent_dim)
-                # Attend to cached block keys/values
-                latent_attn_scores = torch.matmul(
-                    blk_q_inc, cached_k.transpose(-1, -2)
-                ) / math.sqrt(self.latent_dim)
-                # Causal: new token can attend to all blocks
-                latent_attn_probs = F.softmax(latent_attn_scores, dim=-1)
-                latent_attn_probs = self.dropout(latent_attn_probs)
-                latent_context = torch.matmul(latent_attn_probs, cached_v)  # (batch, 1, latent_dim)
-                latent_output = self.latent_out_proj(latent_context)  # (batch, 1, hidden_size)
-                gate_value = torch.sigmoid(self.gate)
-                output = output_std + gate_value * latent_output
+                # N7 FIX: Validate batch size matches to prevent cross-batch contamination
+                if cached_q.size(0) != batch_size:
+                    # Batch size changed (e.g., different batch in concurrent usage)
+                    output = output_std
+                else:
+                    # Compute latent query for the single new token
+                    V_current_expanded = self._repeat_kv(V_current, self.num_kv_groups)
+                    V_reshaped_inc = V_current_expanded.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
+                    hidden_approx_inc = self.v_to_hidden_proj(V_reshaped_inc)
+                    blk_q_inc = self.latent_q_proj(hidden_approx_inc)
+                    # Attend to cached block keys/values
+                    latent_attn_scores = torch.matmul(
+                        blk_q_inc, cached_k.transpose(-1, -2)
+                    ) / math.sqrt(self.latent_dim)
+                    latent_attn_probs = F.softmax(latent_attn_scores, dim=-1)
+                    latent_attn_probs = self.dropout(latent_attn_probs)
+                    latent_context = torch.matmul(latent_attn_probs, cached_v)
+                    latent_output = self.latent_out_proj(latent_context)
+                    gate_value = torch.sigmoid(self.gate)
+                    output = output_std + gate_value * latent_output
             else:
                 # No cached latents: fall back to standard attention only
                 output = output_std
@@ -464,6 +466,9 @@ class SBLAttention(nn.Module):
         if use_cache and past_key_value is None:
             # Prefill step: cache block latents for subsequent incremental steps
             self._cached_block_latents = (blk_q, blk_k, blk_v, num_blocks)
+        elif past_key_value is None:
+            # N7 FIX: Ensure cache is cleared when not using cache, prevents stale data
+            self._cached_block_latents = None
 
         return output, present_key_value
 

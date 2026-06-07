@@ -150,17 +150,23 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None):
 
     Args:
         q: (batch, num_heads, seq_len, head_dim)
-        k: (batch, num_heads, seq_len, head_dim) or (batch, num_kv_heads, seq_len, head_dim)
-        cos: (seq_len, head_dim) cosine part of rotary embedding
-        sin: (seq_len, head_dim) sine part of rotary embedding
-        position_ids: optional position ids (unused, for API compat)
+        k: (batch, num_kv_heads, seq_len, head_dim)
+        cos: (kv_seq_len, head_dim) cosine part of rotary embedding
+        sin: (kv_seq_len, head_dim) sine part of rotary embedding
+        position_ids: (batch, seq_len) position ids for slicing cos/sin
 
     Returns:
         Tuple of (q_embed, k_embed) with rotary position encoding applied.
     """
-    # cos/sin: (seq_len, head_dim) -> (1, 1, seq_len, head_dim)
-    cos = cos.unsqueeze(0).unsqueeze(0)
-    sin = sin.unsqueeze(0).unsqueeze(0)
+    if position_ids is not None:
+        # N6 FIX: Slice cos/sin by position_ids to match actual Q/K positions
+        # position_ids: (batch, seq_len), cos/sin: (kv_seq_len, head_dim)
+        cos = cos[position_ids].unsqueeze(1)  # (batch, 1, seq_len, head_dim)
+        sin = sin[position_ids].unsqueeze(1)  # (batch, 1, seq_len, head_dim)
+    else:
+        # Fallback: broadcast for full-sequence (prefill) when position_ids not provided
+        cos = cos.unsqueeze(0).unsqueeze(0)  # (1, 1, kv_seq_len, head_dim)
+        sin = sin.unsqueeze(0).unsqueeze(0)
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
@@ -250,8 +256,15 @@ class FusionAttention(nn.Module):
         emb = self.rotary_emb(kv_seq_len, device=hidden_states.device)
         cos = emb.cos()
         sin = emb.sin()
-        # Apply RoPE to Q (full position range) and K (full position range)
-        Q, K = apply_rotary_pos_emb(Q, K, cos, sin)
+        # N6 FIX: Build position_ids for proper RoPE slicing
+        if position_ids is None:
+            if past_key_value is not None:
+                offset = past_key_value[0].shape[2]
+                position_ids = torch.arange(offset, offset + seq_len, device=hidden_states.device).unsqueeze(0)
+            else:
+                position_ids = torch.arange(seq_len, device=hidden_states.device).unsqueeze(0)
+        # Apply RoPE with position_ids to prevent broadcast mismatch during incremental generation
+        Q, K = apply_rotary_pos_emb(Q, K, cos, sin, position_ids=position_ids)
         
         # Store RoPE'd K/V in SBLAttention's cache for incremental generation
         # S1 FIXED: KV Cache now works natively through SBLAttention.

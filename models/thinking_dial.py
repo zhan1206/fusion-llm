@@ -47,8 +47,9 @@ from transformers import PreTrainedModel, GenerationMixin
 # ============================================================
 
 THINK_START = "<|think_depth_"
-THINK_END = "|>"
-THINK_DEPTH_PATTERN = re.compile(r"<\|think_depth_(\d+)\|>")
+THINK_CLOSE = "|>"  # Closing bracket for think_depth token
+THINK_END = "<|think_end|>"  # End-of-thinking-block marker
+THINK_DEPTH_PATTERN = re.compile(r"<\|think_depth_(\d)\|>")
 
 # Depth 0-3 的描述
 THINK_DEPTH_DESCRIPTIONS = {
@@ -72,7 +73,7 @@ def build_think_token(depth: int) -> str:
     if not 0 <= depth <= 3:
         raise ValueError(f"depth 必须在 0-3 之间，当前值：{depth}")
     
-    return f"{THINK_START}{depth}{THINK_END}"
+    return f"{THINK_START}{depth}{THINK_CLOSE}"
 
 
 def parse_think_token(text: str) -> Optional[int]:
@@ -430,6 +431,8 @@ class GRPOTrainer:
         返回：
             生成的文本列表
         """
+        # M5 FIX: Pass thinking_depth to model.generate() so the ThinkingDialModel
+        # forward() can actually apply depth-dependent bias to logits
         outputs = self.model.generate(
             input_ids=input_ids,
             max_new_tokens=max_new_tokens,
@@ -438,6 +441,7 @@ class GRPOTrainer:
             do_sample=True,
             pad_token_id=self.model.config.pad_token_id or 0,
             eos_token_id=self.model.config.eos_token_id or 1,
+            thinking_depth=thinking_depth,
             **kwargs,
         )
         
@@ -745,13 +749,8 @@ class ThinkingDialModel(nn.Module):
         if thinking_depth is not None:
             depth_idx = thinking_depth.long().clamp(0, self.thinking_config.num_thinking_depths - 1)
             depth_embedding = self.thinking_embedding(depth_idx)  # (batch, hidden_size)
-            # Project depth embedding to vocabulary space via tied weights
-            depth_bias = nn.functional.linear(
-                depth_embedding.unsqueeze(1),  # (batch, 1, hidden_size)
-                self.thinking_embedding.weight.t(),  # (hidden_size, num_depths) -> transpose gives (num_depths, hidden_size)
-            ).squeeze(1)  # (batch, num_depths)
-            # To properly project to vocab space, use base model's lm_head
-            # Simpler: add hidden_size bias via learned projection
+            # N8 FIX: Removed dead depth_bias computation (was computed but never used)
+            # Apply thinking_gate as scaling factor, then project to vocab space via lm_head
             depth_hidden = self.thinking_gate * depth_embedding  # (batch, hidden_size)
             # Add as residual to logits via lm_head projection
             if hasattr(self.base_model, 'lm_head'):
