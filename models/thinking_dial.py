@@ -505,10 +505,11 @@ class GRPOTrainer:
             shift_labels = labels[:, 1:].contiguous()
             log_probs = F.log_softmax(shift_logits, dim=-1)
             per_token_lp = log_probs.gather(2, shift_labels.unsqueeze(2)).squeeze(2)  # (B, L)
-            mask = (shift_labels != 0).float()
+            # Use -100 as ignore index (standard PyTorch/HuggingFace convention for masked labels)
+            mask = (shift_labels != -100) & (shift_labels != 0)
             if per_token:
-                return per_token_lp * mask  # (B, L)
-            return (per_token_lp * mask).sum(dim=1)  # (B,)
+                return per_token_lp * mask.float()  # (B, L)
+            return (per_token_lp * mask.float()).sum(dim=1)  # (B,)
         return torch.log_softmax(logits[:, -1, :], dim=-1).sum(dim=-1)
 
     def compute_reward(
@@ -544,8 +545,11 @@ class GRPOTrainer:
             return reward_fn(prompt, response)
         if reward_fn is not None and reward_fn in self.REWARD_FUNCTIONS:
             return self.REWARD_FUNCTIONS[reward_fn](prompt, response)
-        if self.reward_fn is not None:
+        # S2 FIX: Check callable before invoking instance reward_fn (could be string from registry)
+        if self.reward_fn is not None and callable(self.reward_fn):
             return self.reward_fn(prompt, response)
+        if self.reward_fn is not None and isinstance(self.reward_fn, str) and self.reward_fn in self.REWARD_FUNCTIONS:
+            return self.REWARD_FUNCTIONS[self.reward_fn](prompt, response)
         
         score = 0.0
         
@@ -728,11 +732,12 @@ class GRPOTrainer:
         
         # Labels: shift right so log_probs[i] = P(token[i+1] | token[...i])
         use_labels = generated_ids[:, 1:].clone()  # predict next token
-        # N23 FIX: Get per-token log probs, then mask prompt positions correctly
+        # N23 FIX: Get per token log probs, then mask prompt positions correctly
         # generated_ids layout: [prompt_tokens | gen_tokens]
         # logits layout:     [prompt_logits | gen_logits] (shifted by 1)
-        # We want log_probs starting from position prompt_len-1 (first gen token prediction)
-        mask_start = max(prompt_len - 1, 0)  # logits at prompt_len-1 predict token at prompt_len
+        # We want log_probs starting from position prompt_len-2 (first gen token prediction)
+        # N25 FIX: off-by-one - first gen token is at index prompt_len-2, not prompt_len-1
+        mask_start = max(prompt_len - 2, 0)  # logits at prompt_len-2 predict token at prompt_len-1
         
         log_probs_per_token = self._normalize_logits_to_log_probs(logits, use_labels, per_token=True)  # (B*N, L)
         # Zero out prompt positions so GRPO loss only uses generated tokens

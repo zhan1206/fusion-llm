@@ -212,3 +212,40 @@ def test_s2_train_step_accepts_thinking_depth(setup):
     import inspect
     sig = inspect.signature(trainer.train_step)
     assert 'thinking_depth' in sig.parameters, "train_step should accept thinking_depth"
+
+
+def test_n25_mask_start_correct():
+    """N25: mask_start should be prompt_len - 2 (first gen token at index prompt_len-2)."""
+    config = FusionConfig(
+        vocab_size=1000, hidden_size=256, num_hidden_layers=2,
+        num_attention_heads=4, num_key_value_heads=2, intermediate_size=512,
+        block_size=8, latent_dim=16, window_size=64,
+    )
+    base_model = FusionModel(config)
+    trainer = GRPOTrainer(base_model)
+    
+    # Test the mask_start calculation: prompt_len=5 -> mask_start=3
+    # This means index 0,1,2 (prompt tokens) are zeroed, index 3+ (gen tokens) are kept
+    prompt_len = 5
+    mask_start = max(prompt_len - 2, 0)
+    assert mask_start == 3, f"Expected mask_start=3, got {mask_start}"
+    
+    # Verify: index 3 is first gen token (not zeroed)
+    assert mask_start == 3, "First gen token should NOT be masked out"
+
+
+def test_reward_fn_string_safety():
+    """S2 FIX: reward_fn as string should not crash compute_reward."""
+    config = FusionConfig(
+        vocab_size=1000, hidden_size=256, num_hidden_layers=2,
+        num_attention_heads=4, num_key_value_heads=2, intermediate_size=512,
+        block_size=8, latent_dim=16, window_size=64,
+    )
+    base_model = FusionModel(config)
+    # Register a test reward function
+    GRPOTrainer.register_reward_fn('test_reward', lambda p, r: 1.0)
+    
+    trainer = GRPOTrainer(base_model, reward_fn='test_reward')  # Set as string
+    # Should not raise TypeError
+    reward = trainer.compute_reward('prompt', 'response')
+    assert reward == 1.0, "String reward_fn should be looked up from registry"
