@@ -136,3 +136,79 @@ def test_generate_samples_with_depth(setup):
             input_ids, num_samples=2, thinking_depth=1, max_new_tokens=3,
         )
     assert ids.shape[0] >= 2
+
+
+def test_n23_prompt_mask_correct_dimension():
+    """N23: Prompt mask should zero per-token positions, not per-sequence."""
+    config = FusionConfig(
+        vocab_size=1000, hidden_size=256, num_hidden_layers=2,
+        num_attention_heads=4, num_key_value_heads=2, intermediate_size=512,
+        block_size=8, latent_dim=16, window_size=64,
+    )
+    base_model = FusionModel(config)
+    trainer = GRPOTrainer(base_model)
+    
+    # Test _normalize_logits_to_log_probs with per_token=True returns 2D
+    B, L, V = 4, 10, config.vocab_size
+    logits = torch.randn(B, L, V)
+    labels = torch.randint(1, V, (B, L))  # non-zero labels
+    
+    per_token = trainer._normalize_logits_to_log_probs(logits, labels, per_token=True)
+    per_seq = trainer._normalize_logits_to_log_probs(logits, labels, per_token=False)
+    
+    assert per_token.dim() == 2 and per_token.shape == (B, L-1), f"Expected ({B}, {L-1}), got {per_token.shape}"
+    assert per_seq.dim() == 1 and per_seq.shape == (B,), f"Expected ({B},), got {per_seq.shape}"
+    
+    # Verify per_seq = per_token.sum(dim=1)
+    assert torch.allclose(per_seq, per_token.sum(dim=1), atol=1e-5), "per_seq should equal per_token sum"
+    
+    # Verify masking: zero out first 3 positions, sum should differ
+    masked = per_token.clone()
+    masked[:, :3] = 0.0
+    assert not torch.allclose(masked.sum(dim=1), per_seq), "Masking should change the sum"
+
+
+def test_n24_pure_fusion_model_no_crash():
+    """N24: GRPOTrainer with pure FusionModel should not crash (hasattr guard)."""
+    config = FusionConfig(
+        vocab_size=1000, hidden_size=256, num_hidden_layers=2,
+        num_attention_heads=4, num_key_value_heads=2, intermediate_size=512,
+        block_size=8, latent_dim=16, window_size=64,
+    )
+    base_model = FusionModel(config)
+    base_model.eval()
+    trainer = GRPOTrainer(base_model)
+    input_ids = torch.randint(0, 1000, (1, 5))
+    
+    # Should not raise AttributeError even with thinking_depth=None
+    with torch.no_grad():
+        ids, texts = trainer.generate_samples(
+            input_ids, num_samples=1, thinking_depth=None, max_new_tokens=3,
+        )
+    assert ids.shape[0] == 1
+
+
+def test_m7_forward_uses_shared_hook(setup):
+    """M7: ThinkingDialModel.forward() uses _build_thinking_logits_hook (single source)."""
+    td_model, _, input_ids = setup
+    with torch.no_grad():
+        out_no_depth = td_model(input_ids)
+        out_depth0 = td_model(input_ids, thinking_depth=0)
+        out_depth3 = td_model(input_ids, thinking_depth=3)
+    
+    # Different depths should produce different logits
+    assert not torch.allclose(out_depth0.logits, out_depth3.logits), \
+        "Different thinking depths should produce different logits via forward()"
+    # depth=0 should still differ from no depth
+    assert not torch.allclose(out_no_depth.logits, out_depth0.logits), \
+        "No depth vs depth=0 should differ"
+
+
+def test_s2_train_step_accepts_thinking_depth(setup):
+    """S2: train_step() accepts thinking_depth parameter."""
+    td_model, _, input_ids = setup
+    trainer = GRPOTrainer(td_model)
+    # Verify the parameter exists
+    import inspect
+    sig = inspect.signature(trainer.train_step)
+    assert 'thinking_depth' in sig.parameters, "train_step should accept thinking_depth"

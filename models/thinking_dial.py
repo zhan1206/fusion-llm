@@ -484,19 +484,31 @@ class GRPOTrainer:
         
         return texts
     
-    def _normalize_logits_to_log_probs(self, logits: torch.Tensor, labels: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Extract per-sequence log probabilities from logits.
+    def _normalize_logits_to_log_probs(
+        self,
+        logits: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+        per_token: bool = False,
+    ) -> torch.Tensor:
+        """Extract log probabilities from logits.
         
-        For GRPO, we need the log prob of the full generated sequence,
-        not just the last token. This properly shifts logits and sums.
+        Args:
+            logits: (B, seq_len, vocab)
+            labels: (B, seq_len) target token ids (shifted)
+            per_token: If True, return (B, seq_len) per-token log probs;
+                       If False, return (B,) per-sequence sum (legacy behavior)
+        
+        For GRPO, we need per-token log probs to mask prompt positions.
         """
         if labels is not None:
             shift_logits = logits[:, :-1, :].contiguous()
             shift_labels = labels[:, 1:].contiguous()
             log_probs = F.log_softmax(shift_logits, dim=-1)
-            per_token = log_probs.gather(2, shift_labels.unsqueeze(2)).squeeze(2)
+            per_token_lp = log_probs.gather(2, shift_labels.unsqueeze(2)).squeeze(2)  # (B, L)
             mask = (shift_labels != 0).float()
-            return (per_token * mask).sum(dim=1)
+            if per_token:
+                return per_token_lp * mask  # (B, L)
+            return (per_token_lp * mask).sum(dim=1)  # (B,)
         return torch.log_softmax(logits[:, -1, :], dim=-1).sum(dim=-1)
 
     def compute_reward(
@@ -611,11 +623,14 @@ class GRPOTrainer:
             first_logits = prefill_outputs.logits[:, -1, :]  # (B, vocab)
         
         # N19 FIX: Use shared logits_hook builder (single source of truth)
-        logits_hook_arg = ThinkingDialModel._build_thinking_logits_hook(
-            thinking_depth, input_ids.shape[0], input_ids.device,
-            self.model.thinking_config, self.model.thinking_embedding, self.model.thinking_gate,
-            gen_model.lm_head,
-        )
+        # N24 FIX: Guard against missing Thinking Dial attributes on pure FusionModel
+        logits_hook_arg = None
+        if thinking_depth is not None and hasattr(self.model, 'thinking_embedding'):
+            logits_hook_arg = ThinkingDialModel._build_thinking_logits_hook(
+                thinking_depth, input_ids.shape[0], input_ids.device,
+                self.model.thinking_config, self.model.thinking_embedding, self.model.thinking_gate,
+                gen_model.lm_head,
+            )
         
         for _ in range(num_samples):
             # Sample first token from prefill logits
@@ -656,6 +671,7 @@ class GRPOTrainer:
         input_ids: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
         reward_fn=None,
+        thinking_depth: int = 0,  # S2 FIX: Allow configuring thinking depth for training
     ) -> Dict[str, float]:
         """
         Execute one GRPO training step with multi-sample generation.
@@ -670,6 +686,7 @@ class GRPOTrainer:
             input_ids: Input token IDs
             labels: Optional labels for log prob computation
             reward_fn: Optional custom reward function(prompt, response) -> float
+            thinking_depth: Thinking Dial depth (0-3) for generation (S2 FIX)
             
         Returns:
             Training statistics
@@ -684,7 +701,7 @@ class GRPOTrainer:
         
         # Step 1: Generate multiple samples per input
         generated_ids, generated_texts = self.generate_samples(
-            input_ids, num_samples=num_samples,
+            input_ids, num_samples=num_samples, thinking_depth=thinking_depth,
         )
         
         # Step 2: Compute rewards
@@ -703,7 +720,7 @@ class GRPOTrainer:
         advantages = self.compute_advantages(rewards, sample_size=num_samples)
         
         # Step 4: Get log probs and compute GRPO loss
-        # N22 FIX: Build loss_mask to exclude prompt tokens from log_prob computation
+        # N22 FIX / N23 FIX: Build loss_mask to exclude prompt tokens from log_prob computation
         prompt_len = input_ids.shape[1]
         
         outputs = self.model(input_ids=generated_ids)
@@ -711,19 +728,16 @@ class GRPOTrainer:
         
         # Labels: shift right so log_probs[i] = P(token[i+1] | token[...i])
         use_labels = generated_ids[:, 1:].clone()  # predict next token
-        # N22 FIX: Mask out prompt positions — only compute log_probs on generated tokens
+        # N23 FIX: Get per-token log probs, then mask prompt positions correctly
         # generated_ids layout: [prompt_tokens | gen_tokens]
         # logits layout:     [prompt_logits | gen_logits] (shifted by 1)
         # We want log_probs starting from position prompt_len-1 (first gen token prediction)
         mask_start = max(prompt_len - 1, 0)  # logits at prompt_len-1 predict token at prompt_len
         
-        log_probs_full = self._normalize_logits_to_log_probs(logits, use_labels)
+        log_probs_per_token = self._normalize_logits_to_log_probs(logits, use_labels, per_token=True)  # (B*N, L)
         # Zero out prompt positions so GRPO loss only uses generated tokens
-        log_probs = log_probs_full.clone()
-        if log_probs.dim() == 1:
-            log_probs[:mask_start] = 0.0
-        else:
-            log_probs[:, :mask_start] = 0.0
+        log_probs_per_token[:, :mask_start] = 0.0
+        log_probs = log_probs_per_token.sum(dim=1)  # (B*N,) per-sequence sum of gen-only log probs
         
         loss = self.compute_grpo_loss(log_probs, advantages)
         
@@ -879,19 +893,18 @@ class ThinkingDialModel(nn.Module):
         )
         
         if thinking_depth is not None:
-            depth_idx = thinking_depth.long().clamp(0, self.thinking_config.num_thinking_depths - 1)
-            depth_embedding = self.thinking_embedding(depth_idx)  # (batch, hidden_size)
-            # N8 FIX: Removed dead depth_bias computation (was computed but never used)
-            # Apply thinking_gate as scaling factor, then project to vocab space via lm_head
-            depth_hidden = self.thinking_gate * depth_embedding  # (batch, hidden_size)
-            # Add as residual to logits via lm_head projection
-            if hasattr(self.base_model, 'lm_head'):
-                vocab_bias = self.base_model.lm_head(depth_hidden)  # (batch, vocab_size)
-                # Create new CausalLMOutputWithPast since it's immutable
+            # M7 FIX: Use shared logits_hook builder (single source of truth with generate path)
+            logits_hook = self._build_thinking_logits_hook(
+                thinking_depth, base_outputs.logits.shape[0], base_outputs.logits.device,
+                self.thinking_config, self.thinking_embedding, self.thinking_gate,
+                self.base_model.lm_head,
+            )
+            if logits_hook is not None:
+                biased_logits = logits_hook(base_outputs.logits)  # (B, seq_len, vocab)
                 from transformers.modeling_outputs import CausalLMOutputWithPast
                 base_outputs = CausalLMOutputWithPast(
                     loss=base_outputs.loss,
-                    logits=base_outputs.logits + vocab_bias.unsqueeze(1),
+                    logits=biased_logits,
                     past_key_values=base_outputs.past_key_values,
                     hidden_states=base_outputs.hidden_states,
                     attentions=base_outputs.attentions,
