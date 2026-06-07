@@ -371,7 +371,6 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         inputs_embeds: Optional[torch.Tensor] = None,
         use_cache: Optional[bool] = None,
         position_ids: Optional[torch.Tensor] = None,  # [M6 FIX] Added
-        thinking_depth: Optional[torch.Tensor] = None,  # N10 FIX: Thinking Dial depth
         return_dict: Optional[bool] = True,
         **kwargs,
     ) -> CausalLMOutputWithPast:
@@ -379,9 +378,6 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         # [M6 FIX] Extract position_ids from kwargs if not passed explicitly
         if 'position_ids' in kwargs:
             position_ids = kwargs.pop('position_ids')
-        # N10 FIX: Extract thinking_depth from kwargs if not passed explicitly
-        if 'thinking_depth' in kwargs:
-            thinking_depth = kwargs.pop('thinking_depth')
         # else: keep the explicit position_ids parameter
         
         # Embeddings
@@ -490,8 +486,6 @@ class FusionModel(PreTrainedModel, GenerationMixin):
             past_seq_len = 0  # [M1 FIX] Track position for RoPE
             generated = input_ids.clone()
         
-        # N10 FIX: Extract thinking_depth from kwargs for forwarding
-        thinking_depth = kwargs.pop('thinking_depth', None)
         logits_hook = kwargs.pop('logits_hook', logits_hook)
         
         for _ in range(max_new_tokens):
@@ -512,7 +506,6 @@ class FusionModel(PreTrainedModel, GenerationMixin):
                 use_cache=True,
                 return_dict=True,
                 position_ids=position_ids,  # [M1 FIX]
-                thinking_depth=thinking_depth,  # N10 FIX
             )
             
             logits = outputs.logits

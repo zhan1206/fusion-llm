@@ -435,6 +435,7 @@ class GRPOTrainer:
         """
         # M5 FIX: Pass thinking_depth to model.generate() so the ThinkingDialModel
         # forward() can actually apply depth-dependent bias to logits
+        # M5/N10/N12: Pass thinking_depth via ThinkingDialModel.generate() which builds logits_hook
         outputs = self.model.generate(
             input_ids=input_ids,
             max_new_tokens=max_new_tokens,
@@ -565,27 +566,20 @@ class GRPOTrainer:
             base_kv = prefill_outputs.past_key_values
             first_logits = prefill_outputs.logits[:, -1, :]  # (B, vocab)
         
-        # N10/N12: Build logits_hook for thinking_depth if using ThinkingDialModel
-        logits_hook_arg = None
-        if thinking_depth is not None and hasattr(self.model, 'thinking_embedding'):
-            if isinstance(thinking_depth, int):
-                thinking_depth_t = torch.tensor(
-                    [thinking_depth] * input_ids.shape[0], device=input_ids.device,
-                )
-            else:
-                thinking_depth_t = thinking_depth
-            depth_idx = thinking_depth_t.long().clamp(0, self.model.thinking_config.num_thinking_depths - 1)
-            depth_embedding = self.model.thinking_embedding(depth_idx)
-            depth_hidden = self.model.thinking_gate * depth_embedding
-            vocab_bias = gen_model.lm_head(depth_hidden).unsqueeze(1)  # (B, 1, vocab)
-            def thinking_logits_hook(logits):
-                return logits + vocab_bias
-            logits_hook_arg = thinking_logits_hook
+        # N19 FIX: Use shared logits_hook builder (single source of truth)
+        logits_hook_arg = ThinkingDialModel._build_thinking_logits_hook(
+            thinking_depth, input_ids.shape[0], input_ids.device,
+            self.model.thinking_config, self.model.thinking_embedding, self.model.thinking_gate,
+            gen_model.lm_head,
+        )
         
         for _ in range(num_samples):
             # Sample first token from prefill logits
-            first_logits_scaled = first_logits / temperature
-            probs = F.softmax(first_logits_scaled, dim=-1)
+            first_logits_for_sample = first_logits / temperature
+            # N18 FIX: Apply thinking bias to first token logits too
+            if logits_hook_arg is not None:
+                first_logits_for_sample = logits_hook_arg(first_logits_for_sample.unsqueeze(1)).squeeze(1)
+            probs = F.softmax(first_logits_for_sample, dim=-1)
             first_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
             
             # Clone KV cache for this sample (each sample diverges)
@@ -665,11 +659,27 @@ class GRPOTrainer:
         advantages = self.compute_advantages(rewards, sample_size=num_samples)
         
         # Step 4: Get log probs and compute GRPO loss
+        # N22 FIX: Build loss_mask to exclude prompt tokens from log_prob computation
+        prompt_len = input_ids.shape[1]
+        
         outputs = self.model(input_ids=generated_ids)
         logits = outputs.logits if hasattr(outputs, 'logits') else outputs['logits']
         
-        use_labels = labels.repeat_interleave(num_samples, dim=0) if labels is not None else generated_ids
-        log_probs = self._normalize_logits_to_log_probs(logits, use_labels)
+        # Labels: shift right so log_probs[i] = P(token[i+1] | token[...i])
+        use_labels = generated_ids[:, 1:].clone()  # predict next token
+        # N22 FIX: Mask out prompt positions — only compute log_probs on generated tokens
+        # generated_ids layout: [prompt_tokens | gen_tokens]
+        # logits layout:     [prompt_logits | gen_logits] (shifted by 1)
+        # We want log_probs starting from position prompt_len-1 (first gen token prediction)
+        mask_start = max(prompt_len - 1, 0)  # logits at prompt_len-1 predict token at prompt_len
+        
+        log_probs_full = self._normalize_logits_to_log_probs(logits, use_labels)
+        # Zero out prompt positions so GRPO loss only uses generated tokens
+        log_probs = log_probs_full.clone()
+        if log_probs.dim() == 1:
+            log_probs[:mask_start] = 0.0
+        else:
+            log_probs[:, :mask_start] = 0.0
         
         loss = self.compute_grpo_loss(log_probs, advantages)
         
@@ -767,6 +777,37 @@ class ThinkingDialModel(nn.Module):
         # 门控机制（控制 thinking embedding 的贡献度）
         self.thinking_gate = nn.Parameter(torch.tensor(0.1))
     
+    @staticmethod
+    def _build_thinking_logits_hook(
+        thinking_depth: Optional[int],
+        batch_size: int,
+        device: torch.device,
+        thinking_config: 'ThinkingConfig',
+        thinking_embedding: torch.nn.Module,
+        thinking_gate: torch.nn.Parameter,
+        lm_head: torch.nn.Module,
+    ) -> Optional[callable]:
+        """N19 FIX: Single source of truth for constructing thinking depth logits hook.
+
+        Returns a callable(logits) -> logits or None if thinking_depth is None.
+        Used by both ThinkingDialModel.generate() and GRPOTrainer.generate_samples().
+        """
+        if thinking_depth is None:
+            return None
+        if isinstance(thinking_depth, int):
+            thinking_depth_t = torch.tensor(
+                [thinking_depth] * batch_size, device=device,
+            )
+        else:
+            thinking_depth_t = thinking_depth
+        depth_idx = thinking_depth_t.long().clamp(0, thinking_config.num_thinking_depths - 1)
+        depth_embedding = thinking_embedding(depth_idx)  # (B, hidden)
+        depth_hidden = thinking_gate * depth_embedding
+        vocab_bias = lm_head(depth_hidden).unsqueeze(1)  # (B, 1, vocab)
+        def thinking_logits_hook(logits):
+            return logits + vocab_bias
+        return thinking_logits_hook
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -838,27 +879,13 @@ class ThinkingDialModel(nn.Module):
         Returns:
             Generated token IDs tensor or CausalLMOutputWithPast
         """
-        if thinking_depth is not None:
-            # Convert scalar depth to tensor for batch
-            if isinstance(thinking_depth, int):
-                thinking_depth_t = torch.tensor(
-                    [thinking_depth] * input_ids.shape[0],
-                    device=input_ids.device,
-                )
-            else:
-                thinking_depth_t = thinking_depth
-            
-            # N10/N11 FIX: Create logits hook that applies thinking bias
-            depth_idx = thinking_depth_t.long().clamp(0, self.thinking_config.num_thinking_depths - 1)
-            depth_embedding = self.thinking_embedding(depth_idx)  # (batch, hidden_size)
-            depth_hidden = self.thinking_gate * depth_embedding
-            vocab_bias = self.base_model.lm_head(depth_hidden)  # (batch, vocab_size)
-            vocab_bias_unsqueezed = vocab_bias.unsqueeze(1)  # (batch, 1, vocab_size)
-            
-            def thinking_logits_hook(logits):
-                return logits + vocab_bias_unsqueezed
-            
-            kwargs['logits_hook'] = thinking_logits_hook
+        hook = ThinkingDialModel._build_thinking_logits_hook(
+            thinking_depth, input_ids.shape[0], input_ids.device,
+            self.thinking_config, self.thinking_embedding, self.thinking_gate,
+            self.base_model.lm_head,
+        )
+        if hook is not None:
+            kwargs['logits_hook'] = hook
         
         return self.base_model.generate(input_ids=input_ids, **kwargs)
 
