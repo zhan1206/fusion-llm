@@ -127,12 +127,11 @@ def create_local_model(
     vocab_size_override: Optional[int] = None,
 ):
     """S4 FIX: Delegate to shared model_utils.create_local_model, preserving API."""
-    model = _create_local_model_from_utils(
+    model, config = _create_local_model_from_utils(
         model_size=model_size,
         torch_dtype=torch_dtype,
         vocab_size_override=vocab_size_override,
     )
-    config = model.config
     return model, config
 
 

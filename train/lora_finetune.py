@@ -150,15 +150,15 @@ def create_local_model(
     quantize: bool = False,
     load_in_4bit: bool = False,
     load_in_8bit: bool = False,
+    torch_dtype: torch.dtype = torch.bfloat16,  # N13 FIX: expose torch_dtype
     vocab_size_override: int | None = None,
 ):
     """S4 FIX: Delegate to shared model_utils.create_local_model, then apply quantization."""
-    model = _create_local_model_from_utils(
+    model, config = _create_local_model_from_utils(
         model_size=model_size,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch_dtype,  # N13 FIX
         vocab_size_override=vocab_size_override,
     )
-    config = model.config
 
     # S-NEW-9 FIX: QLoRA requires proper bitsandbytes integration
     if quantize:

@@ -47,7 +47,7 @@ def create_local_model(
         vocab_size_override: Override vocab_size to match actual tokenizer
 
     Returns:
-        FusionModel instance with random initialization
+        Tuple of (FusionModel instance, FusionConfig) — matches train script wrapper API (N15 FIX)
     """
     from models.fusion_model import FusionConfig, FusionModel
 
@@ -73,4 +73,4 @@ def create_local_model(
     param_count = sum(p.numel() for p in model.parameters())
     logger.info(f"  Parameters: {param_count / 1e9:.2f}B")
 
-    return model
+    return model, config  # N15 FIX: Return (model, config) tuple for API consistency

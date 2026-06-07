@@ -49,7 +49,7 @@ from transformers import PreTrainedModel, GenerationMixin
 THINK_START = "<|think_depth_"
 THINK_CLOSE = "|>"  # Closing bracket for think_depth token
 THINK_END = "<|think_end|>"  # End-of-thinking-block marker
-THINK_DEPTH_PATTERN = re.compile(r"<\|think_depth_(\d)\|>")
+THINK_DEPTH_PATTERN = re.compile(r"<\|think_depth_(\d+)\|")  # N14 FIX: \d+ for future depth>=10
 
 # Depth 0-3 的描述
 THINK_DEPTH_DESCRIPTIONS = {
@@ -323,10 +323,12 @@ class GRPOTrainer:
         model: PreTrainedModel,
         grpo_config: Optional[GRPOConfig] = None,
         thinking_config: Optional[ThinkingConfig] = None,
+        tokenizer=None,  # N16 FIX: Accept tokenizer for decode
     ):
         self.model = model
         self.grpo_config = grpo_config or GRPOConfig()
         self.thinking_config = thinking_config or ThinkingConfig()
+        self.tokenizer = tokenizer  # N16 FIX
         
         # 优化器
         self.optimizer = None
@@ -439,14 +441,14 @@ class GRPOTrainer:
             temperature=temperature,
             top_p=top_p,
             do_sample=True,
-            pad_token_id=self.model.config.pad_token_id or 0,
-            eos_token_id=self.model.config.eos_token_id or 1,
+            pad_token_id=getattr(self.model.config, 'pad_token_id', None) or 0,
+            eos_token_id=getattr(self.model.config, 'eos_token_id', None) or 1,
             thinking_depth=thinking_depth,
             **kwargs,
         )
         
-        # Decode
-        if hasattr(self, 'tokenizer') and self.tokenizer is not None:
+        # Decode - N16 FIX: Use self.tokenizer if available
+        if self.tokenizer is not None:
             texts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
         else:
             texts = [f"[generated_ids shape: {outputs.shape}]" for _ in outputs]
@@ -551,19 +553,61 @@ class GRPOTrainer:
         all_ids = []
         all_texts = []
         
-        for _ in range(num_samples):
-            outputs = self.model.generate(
+        # N17 FIX: Prefill once, then clone KV cache for each sample
+        # Determine the actual generation model (unwrap ThinkingDialModel if needed)
+        gen_model = self.model.base_model if hasattr(self.model, 'base_model') else self.model
+        
+        with torch.no_grad():
+            prefill_outputs = gen_model.forward(
                 input_ids=input_ids,
-                max_new_tokens=max_new_tokens,
+                use_cache=True,
+            )
+            base_kv = prefill_outputs.past_key_values
+            first_logits = prefill_outputs.logits[:, -1, :]  # (B, vocab)
+        
+        # N10/N12: Build logits_hook for thinking_depth if using ThinkingDialModel
+        logits_hook_arg = None
+        if thinking_depth is not None and hasattr(self.model, 'thinking_embedding'):
+            if isinstance(thinking_depth, int):
+                thinking_depth_t = torch.tensor(
+                    [thinking_depth] * input_ids.shape[0], device=input_ids.device,
+                )
+            else:
+                thinking_depth_t = thinking_depth
+            depth_idx = thinking_depth_t.long().clamp(0, self.model.thinking_config.num_thinking_depths - 1)
+            depth_embedding = self.model.thinking_embedding(depth_idx)
+            depth_hidden = self.model.thinking_gate * depth_embedding
+            vocab_bias = gen_model.lm_head(depth_hidden).unsqueeze(1)  # (B, 1, vocab)
+            def thinking_logits_hook(logits):
+                return logits + vocab_bias
+            logits_hook_arg = thinking_logits_hook
+        
+        for _ in range(num_samples):
+            # Sample first token from prefill logits
+            first_logits_scaled = first_logits / temperature
+            probs = F.softmax(first_logits_scaled, dim=-1)
+            first_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
+            
+            # Clone KV cache for this sample (each sample diverges)
+            sample_kv = tuple(tuple(t.clone() for t in layer_kv) for layer_kv in base_kv)
+            
+            # Generate rest using pre-computed KV cache
+            outputs = gen_model.generate(
+                input_ids=first_token,
+                max_new_tokens=max_new_tokens - 1,
                 temperature=temperature,
                 top_p=top_p,
                 do_sample=True,
-                pad_token_id=self.model.config.pad_token_id or 0,
-                eos_token_id=self.model.config.eos_token_id or 1,
+                pad_token_id=getattr(gen_model.config, 'pad_token_id', None) or 0,
+                eos_token_id=getattr(gen_model.config, 'eos_token_id', None) or 1,
+                past_key_values=sample_kv,  # N17 FIX: Reuse prefilled KV cache
+                logits_hook=logits_hook_arg,
             )
-            all_ids.append(outputs)
+            # outputs already includes first_token at position 0, prepend original input_ids
+            full_output = torch.cat([input_ids, outputs], dim=1)
+            all_ids.append(full_output)
             
-            if hasattr(self, 'tokenizer') and self.tokenizer is not None:
+            if self.tokenizer is not None:  # N16 FIX
                 texts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
                 all_texts.extend(texts)
         
@@ -610,7 +654,7 @@ class GRPOTrainer:
         for i, text in enumerate(generated_texts):
             prompt_idx = i // num_samples
             prompt_text = ""
-            if hasattr(self, 'tokenizer') and self.tokenizer is not None:
+            if self.tokenizer is not None:  # N16 FIX
                 prompt_text = self.tokenizer.decode(input_ids[prompt_idx], skip_special_tokens=True)
             reward = self.compute_reward(prompt_text, text, reward_fn)
             rewards_list.append(reward)
@@ -699,6 +743,9 @@ class ThinkingDialModel(nn.Module):
     
     在基础模型上添加 Thinking Dial 控制能力。
     通过额外的 embedding 层学习推理深度表示。
+    
+    N11 FIX: Now provides generate() method that delegates to base_model.generate()
+    with thinking_depth forwarding, making it compatible with GRPOTrainer.
     """
     
     def __init__(
@@ -766,6 +813,54 @@ class ThinkingDialModel(nn.Module):
                 )
         
         return base_outputs
+    
+    # N11 FIX: Provide generate() method for GRPOTrainer compatibility
+    @property
+    def config(self):
+        return self.base_model.config
+    
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        thinking_depth: Optional[int] = None,
+        **kwargs,
+    ) -> Any:
+        """Generate text with Thinking Dial control.
+        
+        N11 FIX: Now provides generate() by delegating to base_model.generate()
+        with a logits_hook that applies depth-dependent bias at each step.
+        
+        Args:
+            input_ids: Input token IDs
+            thinking_depth: Thinking Dial depth (0-3)
+            **kwargs: Additional args forwarded to base_model.generate()
+            
+        Returns:
+            Generated token IDs tensor or CausalLMOutputWithPast
+        """
+        if thinking_depth is not None:
+            # Convert scalar depth to tensor for batch
+            if isinstance(thinking_depth, int):
+                thinking_depth_t = torch.tensor(
+                    [thinking_depth] * input_ids.shape[0],
+                    device=input_ids.device,
+                )
+            else:
+                thinking_depth_t = thinking_depth
+            
+            # N10/N11 FIX: Create logits hook that applies thinking bias
+            depth_idx = thinking_depth_t.long().clamp(0, self.thinking_config.num_thinking_depths - 1)
+            depth_embedding = self.thinking_embedding(depth_idx)  # (batch, hidden_size)
+            depth_hidden = self.thinking_gate * depth_embedding
+            vocab_bias = self.base_model.lm_head(depth_hidden)  # (batch, vocab_size)
+            vocab_bias_unsqueezed = vocab_bias.unsqueeze(1)  # (batch, 1, vocab_size)
+            
+            def thinking_logits_hook(logits):
+                return logits + vocab_bias_unsqueezed
+            
+            kwargs['logits_hook'] = thinking_logits_hook
+        
+        return self.base_model.generate(input_ids=input_ids, **kwargs)
 
 
 # ============================================================
