@@ -718,6 +718,12 @@ class GRPOTrainer:
             reward = self.compute_reward(prompt_text, text, reward_fn)
             rewards_list.append(reward)
         
+        # Fallback: if no tokenizer, use dummy text for each sample
+        if not rewards_list and len(generated_ids) > 0:
+            for i in range(len(generated_ids)):
+                reward = self.compute_reward("", "generated", reward_fn)
+                rewards_list.append(reward)
+        
         rewards = torch.tensor(rewards_list, dtype=torch.float32, device=device)
         
         # Step 3: Compute group-relative advantages
