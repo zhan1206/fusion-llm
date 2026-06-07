@@ -4,6 +4,11 @@ T-KD 教科书级知识蒸馏管道
 使用开源教师模型（Qwen、DeepSeek等）对高信誉源（维基、教科书、学术论文）进行改写，
 生成风格统一、论证清晰的教学文本。
 
+注意：本脚本需要外部教师模型权重（如 Qwen2.5-72B-Instruct），这是蒸馏管道的设计要求。
+若无法获取大型教师模型，可指定较小的本地模型路径替代，例如：
+    --teacher_model "Qwen/Qwen2.5-7B-Instruct"  # 较小的替代方案
+    --teacher_model "/path/to/local/model"       # 本地路径
+
 使用方法：
     python data_pipeline/t_kd_distillation.py \
         --teacher_model "Qwen/Qwen2.5-72B-Instruct" \
