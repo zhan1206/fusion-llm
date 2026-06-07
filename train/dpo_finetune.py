@@ -87,9 +87,7 @@ class DPOTrainer:
             from models.tokenizer import load_tokenizer
             self._tokenizer = load_tokenizer(self.config.model_path)
         return self._tokenizer
-        self.model = None
-        self.ref_model = None
-        
+
     def _get_tokenizer(self) -> object:
         """Get tokenizer with fallback to character-level encoding."""
         try:

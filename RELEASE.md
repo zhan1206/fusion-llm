@@ -25,8 +25,8 @@
 - 包含完整部署指南（README_GGML.md、README_ONNX.md）
 
 ### 4. 优化 SBLA 注意力
-- **优化版 SBLA 注意力**（`models/optimized_sbla_attention.py`）
-- **性能提升**：0.49 ms（比原版 2.07 ms 快 **4.2 倍**！）
+- SBLA 注意力速度优化已合入 `models/sbla_attention.py`
+- **性能提升**：比原始实现快 **4.2 倍**
 - 支持混合精度（FP16）、优化内存访问模式
 
 ## 🔧 修复
@@ -101,12 +101,7 @@ python deployment/export_onnx.py
 ```
 
 ### 5. 使用优化版 SBLA 注意力
-```python
-from models.optimized_sbla_attention import OptimizedSBLAttention
-
-# 替换原版
-attn = OptimizedSBLAttention(config)
-```
+优化已合入主模块，直接使用 `SBLAttention` 即可，无需额外导入。
 
 ## 📊 文件变更
 
@@ -115,9 +110,8 @@ attn = OptimizedSBLAttention(config)
 2. `evaluation/visualization_graphical.py` - 图形版可视化工具
 3. `deployment/export_ggml.py` - GGML 部署选项
 4. `deployment/export_onnx.py` - ONNX 部署选项
-5. `models/optimized_sbla_attention.py` - 优化版 SBLA 注意力
-6. `output/ggml/README_GGML.md` - GGML 部署指南
-7. `output/onnx/README_ONNX.md` - ONNX 部署指南
+5. `output/ggml/README_GGML.md` - GGML 部署指南
+6. `output/onnx/README_ONNX.md` - ONNX 部署指南
 
 ### 更新文件
 1. `VERSION` - v1.0.0 → v1.1.0

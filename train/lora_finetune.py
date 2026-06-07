@@ -34,13 +34,18 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import sys
 import os
+import json
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # H8-H9: Wrap optional imports in try/except
 try:
     import deepspeed
 except ImportError:
     deepspeed = None
-    logging.warning("DeepSpeed not installed. DeepSpeed features will be unavailable.")
+    logger.warning("DeepSpeed not installed. DeepSpeed features will be unavailable.")
 
 try:
     import bitsandbytes
@@ -55,11 +60,7 @@ try:
     from models import FusionModel, FusionConfig
 except ImportError:
     from models.fusion_model import FusionModel, FusionConfig
-import json
-import logging
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 # ============================================================

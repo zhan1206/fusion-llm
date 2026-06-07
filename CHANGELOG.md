@@ -18,7 +18,7 @@
 - 添加图形版模型可视化工具（`evaluation/visualization_graphical.py`）
 - 添加 GGML 部署选项（`deployment/export_ggml.py`）
 - 添加 ONNX 部署选项（`deployment/export_onnx.py`）
-- 添加优化的 SBLA 注意力（`models/optimized_sbla_attention.py`，0.49 ms）
+- 优化 SBLA 注意力速度（0.49 ms vs 原版 2.07 ms，优化已合入 `sbla_attention.py`）
 
 ### 修复
 - 修复 ONNX 部署选项中的 `pad_token` 设置问题

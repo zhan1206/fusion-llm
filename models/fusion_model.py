@@ -74,7 +74,6 @@ class FusionConfig(PretrainedConfig):
         # SBLA parameters
         block_size: int = 512,
         latent_dim: int = 64,
-        sbla_window_size: Optional[int] = None,
         window_size: Optional[int] = None,
         sbla_mode: str = "pure_sbla",
         # Thinking Dial parameters
@@ -102,8 +101,7 @@ class FusionConfig(PretrainedConfig):
         # SBLA parameters
         self.block_size = block_size
         self.latent_dim = latent_dim
-        self.window_size = window_size or sbla_window_size or block_size
-        self.sbla_window_size = self.window_size
+        self.window_size = window_size or block_size  # [M8 FIX] Remove redundant sbla_window_size
         self.sbla_mode = sbla_mode
         
         # Thinking Dial parameters
@@ -118,7 +116,7 @@ class FusionConfig(PretrainedConfig):
 try:
     from transformers import AutoConfig
     AutoConfig.register("fusion", FusionConfig)
-except Exception:
+except (ImportError, ValueError):
     pass  # Already registered or AutoConfig unavailable
 
 
@@ -223,6 +221,9 @@ class FusionAttention(nn.Module):
         self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * head_dim, bias=False)
         self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * head_dim, bias=False)
         self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * head_dim, bias=False)
+        # [S1 FIX] o_proj is sbla.out_proj — needed so LoRA target_modules=["o_proj"] works
+        # We assign it after sbla is created (above). This shares the parameter.
+        self.o_proj = self.sbla.out_proj
     
     def forward(
         self,
@@ -431,8 +432,32 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         do_sample: bool = True,
         pad_token_id: Optional[int] = None,
         eos_token_id: Optional[int] = None,
+        return_dict_in_generate: bool = False,
         **kwargs,
-    ) -> torch.Tensor:
+    ) -> CausalLMOutputWithPast:
+        """Generate text with KV cache and SBLA incremental support.
+        
+        Args:
+            input_ids: Input token IDs
+            max_new_tokens: Maximum number of tokens to generate
+            temperature: Sampling temperature (must be > 0)
+            top_p: Nucleus sampling threshold (0 < top_p <= 1)
+            do_sample: Whether to sample or use greedy decoding
+            pad_token_id: Padding token ID
+            eos_token_id: End-of-sequence token ID
+            return_dict_in_generate: If True, return CausalLMOutputWithPast
+        
+        Returns:
+            CausalLMOutputWithPast if return_dict_in_generate, else generated token IDs tensor
+        """
+        # [M4 FIX] Parameter validation
+        if temperature <= 0:
+            raise ValueError(f"temperature must be > 0, got {temperature}")
+        if not (0 < top_p <= 1.0):
+            raise ValueError(f"top_p must be in (0, 1], got {top_p}")
+        if max_new_tokens <= 0:
+            raise ValueError(f"max_new_tokens must be > 0, got {max_new_tokens}")
+        
         batch_size = input_ids.shape[0]
         device = input_ids.device
         eos_token_id = eos_token_id or getattr(self.config, "eos_token_id", None)
@@ -492,6 +517,14 @@ class FusionModel(PreTrainedModel, GenerationMixin):
             if eos_token_id is not None and (next_token == eos_token_id).all():
                 break
         
+        # [M3 FIX] Return CausalLMOutputWithPast for API consistency
+        if return_dict_in_generate:
+            return CausalLMOutputWithPast(
+                loss=None,
+                logits=None,
+                past_key_values=past_key_values,
+                sequences=generated,
+            )
         return generated
     
     def prepare_inputs_for_generation(self, input_ids: torch.Tensor, past_key_values=None, **kwargs):

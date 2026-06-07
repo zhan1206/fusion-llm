@@ -115,7 +115,7 @@ class FusionMiniConfig(PretrainedConfig):
 try:
     from transformers import AutoConfig
     AutoConfig.register("fusion_mini", FusionMiniConfig)
-except Exception:
+except (ImportError, ValueError):
     pass  # Already registered or AutoConfig unavailable
 
 

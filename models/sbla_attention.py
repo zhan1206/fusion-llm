@@ -272,181 +272,20 @@ class SBLAttention(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        """Forward pass — DEPRECATED, use forward_with_qkv() instead.
+
+        This method is kept only for backward compatibility.
+        FusionAttention and FusionMiniLayer both call forward_with_qkv()
+        with pre-projected Q/K/V (after RoPE), which is the canonical path.
+
+        Raises:
+            RuntimeError: Always, since Q/K/V projections were removed (S-NEW-8).
         """
-        前向传播
-        
-        参数：
-            hidden_states: (batch, seq_len, hidden_size)
-            attention_mask: (batch, 1, 1, seq_len)，1.0=有效位置，0.0=无效位置
-            output_attentions: 是否输出注意力权重
-            past_key_value: 缓存的 (K, V) 用于增量生成
-            use_cache: 是否返回缓存
-            
-        返回：
-            output: (batch, seq_len, hidden_size)
-            attentions: 注意力权重（可选）
-            present_key_value: 缓存的 (K, V)（可选）
-        """
-        batch_size, seq_len, _ = hidden_states.shape
-        device = hidden_states.device
-        
-        # ========== 1. Q/K/V 投影 ==========
-        # S-NEW-8 FIX + M-NEW-15 FIX: Q/K/V projections removed; guard with clear check
-        if not hasattr(self, 'q_proj'):
-            raise RuntimeError(
-                "SBLAttention.forward() requires Q/K/V projections, but they were "
-                "removed to avoid parameter waste. Use FusionAttention wrapper or "
-                "call sbla.forward_with_qkv(Q, K, V, ...) instead."
-            )
-        Q = self.q_proj(hidden_states)  # (batch, seq_len, num_heads * head_dim)
-        K = self.k_proj(hidden_states)  # (batch, seq_len, num_kv_heads * head_dim)
-        V = self.v_proj(hidden_states)
-        
-        # 重塑为多头: Q -> (batch, num_heads, seq_len, head_dim)
-        Q = Q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        # K/V -> (batch, num_kv_heads, seq_len, head_dim)
-        K = K.view(batch_size, seq_len, self.num_key_value_heads, self.kv_head_dim).transpose(1, 2)
-        V = V.view(batch_size, seq_len, self.num_key_value_heads, self.kv_head_dim).transpose(1, 2)
-        
-        # ========== KV Cache: concatenate with past ==========
-        kv_seq_len = seq_len
-        if past_key_value is not None:
-            past_K, past_V = past_key_value
-            kv_seq_len = past_K.shape[2] + seq_len
-            K = torch.cat([past_K, K], dim=2)
-            V = torch.cat([past_V, V], dim=2)
-        
-        present_key_value = (K, V) if use_cache else None
-        
-        # GQA: expand K/V to match Q heads
-        K = self._repeat_kv(K, self.num_kv_groups)  # (batch, num_heads, kv_seq_len, head_dim)
-        V = self._repeat_kv(V, self.num_kv_groups)
-        
-        # ========== 2. 构建注意力掩码 ==========
-        
-        # 因果掩码（自回归必需）- size matches (Q_seq_len, kv_seq_len)
-        causal_mask = self._build_causal_mask(seq_len, kv_seq_len, device)  # (seq_len, kv_seq_len)
-        
-        # 窗口掩码（如果使用 pure_sbla 模式）
-        if self.mode == "pure_sbla":
-            window_mask = self._build_window_mask(seq_len, kv_seq_len, self.window_size, device)
-            combined_mask = causal_mask + window_mask  # 取并集
-        else:
-            combined_mask = causal_mask
-        
-        # 应用外部 attention_mask（padding mask）
-        # Supports both raw HF format (batch, seq_len) with 1=valid/0=padding,
-        # and pre-expanded format (batch, 1, 1, seq_len).
-        if attention_mask is not None:
-            if attention_mask.dim() == 2:
-                # Raw HF format: (batch, seq_len), 1=valid, 0=padding
-                # For KV cache: mask covers kv_seq_len positions
-                if past_key_value is not None:
-                    # Past tokens are all valid; only current tokens may have padding
-                    full_mask = torch.ones(batch_size, kv_seq_len, device=device, dtype=attention_mask.dtype)
-                    full_mask[:, -seq_len:] = attention_mask
-                    padding_mask = (1.0 - full_mask.float()).unsqueeze(1).unsqueeze(2)
-                else:
-                    padding_mask = (1.0 - attention_mask.float()).unsqueeze(1).unsqueeze(2)
-                padding_mask = padding_mask * torch.finfo(hidden_states.dtype).min
-                combined_mask = combined_mask.unsqueeze(0).unsqueeze(0) + padding_mask
-            elif attention_mask.dim() == 4:
-                ext_mask = attention_mask.squeeze(1)  # (batch, 1, seq_len)
-                if past_key_value is not None:
-                    full_mask = torch.ones(batch_size, 1, kv_seq_len, device=device, dtype=ext_mask.dtype)
-                    full_mask[:, :, -seq_len:] = ext_mask
-                    padding_mask = (1.0 - full_mask) * float('-inf')
-                else:
-                    padding_mask = (1.0 - ext_mask) * float('-inf')
-                combined_mask = combined_mask.unsqueeze(0) + padding_mask.unsqueeze(1)
-            else:
-                padding_mask = (1.0 - attention_mask.float()).unsqueeze(1)  # (batch, 1, 1, seq_len)
-                if past_key_value is not None:
-                    full_mask = torch.ones(batch_size, 1, 1, kv_seq_len, device=device, dtype=attention_mask.dtype)
-                    full_mask[:, :, :, -seq_len:] = attention_mask.unsqueeze(1)
-                    padding_mask = (1.0 - full_mask.float()) * torch.finfo(hidden_states.dtype).min
-                else:
-                    padding_mask = padding_mask * torch.finfo(hidden_states.dtype).min
-                combined_mask = combined_mask.unsqueeze(0).unsqueeze(0) + padding_mask
-        else:
-            combined_mask = combined_mask.unsqueeze(0)  # (1, 1, seq_len, kv_seq_len)
-        
-        # ========== 3. 块内窗口注意力 ==========
-        attn_scores = torch.matmul(Q, K.transpose(-1, -2)) / math.sqrt(self.head_dim)
-        attn_scores = attn_scores + combined_mask
-        
-        attn_probs = F.softmax(attn_scores, dim=-1)
-        attn_probs = self.dropout(attn_probs)
-        
-        context = torch.matmul(attn_probs, V)  # (batch, num_heads, seq_len, head_dim)
-        
-        # 重塑回原始形状
-        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
-        output_std = self.out_proj(context)
-        
-        # ========== 4. SBLA 跨块潜向量关联 ==========
-        # NOTE: Block latent computation uses current hidden_states only.
-        # For incremental generation with KV cache, we skip SBLA latent contribution
-        # since a single token cannot form a meaningful block. The standard attention
-        # path already benefits from KV cache. This is a known limitation - full
-        # incremental SBLA would require caching block latents across steps.
-        if past_key_value is not None and seq_len <= 1:
-            # Incremental step: skip block latent computation
-            gate_value = torch.sigmoid(self.gate)
-            output = output_std  # No latent contribution for single-token steps
-            output = self.LayerNorm(output)
-            output = self.dropout(output)
-            if output_attentions:
-                return output, None, present_key_value
-            return output, present_key_value
-        
-        # Normalize attention_mask for block latent computation
-        # _compute_block_latents expects 4D mask or None
-        latent_mask = attention_mask
-        if attention_mask is not None and attention_mask.dim() == 2:
-            latent_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # (batch, 1, 1, seq_len)
-        
-        (
-            blk_q, blk_k, blk_v,
-            num_blocks, real_block_sizes,
-        ) = self._compute_block_latents(hidden_states, latent_mask)
-        
-        # 跨块潜向量注意力（支持因果：块 i 只能 attend 到块 <= i）
-        latent_causal_mask = self._build_causal_mask(num_blocks, num_blocks, device)  # (num_blocks, num_blocks)
-        latent_attn_scores = torch.matmul(blk_q, blk_k.transpose(-1, -2)) / math.sqrt(self.latent_dim)
-        latent_attn_scores = latent_attn_scores + latent_causal_mask.unsqueeze(0)
-        
-        latent_attn_probs = F.softmax(latent_attn_scores, dim=-1)
-        latent_attn_probs = self.dropout(latent_attn_probs)
-        
-        # 加权求和
-        latent_context = torch.matmul(latent_attn_probs, blk_v)  # (batch, num_blocks, latent_dim)
-        
-        # 投影回 hidden_size
-        latent_output = self.latent_out_proj(latent_context)  # (batch, num_blocks, hidden_size)
-        
-        # 扩展回序列级别：(batch, num_blocks, block_size, hidden_size) -> (batch, padded_len, hidden_size)
-        latent_output = latent_output.unsqueeze(2).expand(
-            -1, -1, self.block_size, -1
-        ).contiguous().view(batch_size, num_blocks * self.block_size, self.hidden_size)
-        
-        # 裁剪到原始 seq_len
-        latent_output = latent_output[:, :seq_len, :]
-        
-        # ========== 5. 门控合并 ==========
-        
-        # 可学习的门控（sigmoid 保证在 0~1 之间）
-        gate_value = torch.sigmoid(self.gate)
-        output = output_std + gate_value * latent_output
-        
-        # LayerNorm + Dropout
-        output = self.LayerNorm(output)
-        output = self.dropout(output)
-        
-        if output_attentions:
-            return output, attn_probs, present_key_value
-        
-        return output, present_key_value
+        raise RuntimeError(
+            "SBLAttention.forward() is deprecated. Q/K/V projections were removed "
+            "to avoid parameter waste (S-NEW-8). Use FusionAttention wrapper or "
+            "call sbla.forward_with_qkv(Q, K, V, ...) instead."
+        )
 
     def forward_with_qkv(
         self,
@@ -479,6 +318,8 @@ class SBLAttention(nn.Module):
 
         # KV Cache: concatenate with past
         kv_seq_len = seq_len
+        # Save current-step V before concat for incremental SBLA latent computation
+        V_current = V  # (batch, num_kv_heads, seq_len, kv_head_dim)
         if past_key_value is not None:
             past_K, past_V = past_key_value
             kv_seq_len = past_K.shape[2] + seq_len
@@ -543,9 +384,36 @@ class SBLAttention(nn.Module):
         context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
         output_std = self.out_proj(context)
 
-        # SBLA latent contribution (skip for incremental steps)
+        # SBLA latent contribution
+        # [F2 FIX] During incremental generation, use cached block latents from
+        # the prefill step to maintain SBLA's cross-block contribution.
+        # On prefill (past_key_value is None), compute and cache block latents.
+        # On incremental steps, use the cached latents with the new token's query.
         if past_key_value is not None and seq_len <= 1:
-            output = output_std
+            # Incremental step: use cached block latents if available
+            if hasattr(self, '_cached_block_latents') and self._cached_block_latents is not None:
+                cached_q, cached_k, cached_v, cached_num_blocks = self._cached_block_latents
+                # Compute latent query for the single new token
+                # V_current is the single-step V before KV concat: (B, num_kv_heads, 1, kv_head_dim)
+                # After _repeat_kv on V_current it would be (B, num_heads, 1, head_dim)
+                V_current_expanded = self._repeat_kv(V_current, self.num_kv_groups)
+                V_reshaped_inc = V_current_expanded.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
+                hidden_approx_inc = self.v_to_hidden_proj(V_reshaped_inc)  # (batch, 1, hidden_size)
+                blk_q_inc = self.latent_q_proj(hidden_approx_inc)  # (batch, 1, latent_dim)
+                # Attend to cached block keys/values
+                latent_attn_scores = torch.matmul(
+                    blk_q_inc, cached_k.transpose(-1, -2)
+                ) / math.sqrt(self.latent_dim)
+                # Causal: new token can attend to all blocks
+                latent_attn_probs = F.softmax(latent_attn_scores, dim=-1)
+                latent_attn_probs = self.dropout(latent_attn_probs)
+                latent_context = torch.matmul(latent_attn_probs, cached_v)  # (batch, 1, latent_dim)
+                latent_output = self.latent_out_proj(latent_context)  # (batch, 1, hidden_size)
+                gate_value = torch.sigmoid(self.gate)
+                output = output_std + gate_value * latent_output
+            else:
+                # No cached latents: fall back to standard attention only
+                output = output_std
             output = self.LayerNorm(output)
             output = self.dropout(output)
             return output, present_key_value
@@ -592,10 +460,15 @@ class SBLAttention(nn.Module):
         output = self.LayerNorm(output)
         output = self.dropout(output)
 
+        # [F2 FIX] Cache block latents for incremental generation
+        if use_cache and past_key_value is None:
+            # Prefill step: cache block latents for subsequent incremental steps
+            self._cached_block_latents = (blk_q, blk_k, blk_v, num_blocks)
+
         return output, present_key_value
 
 
-# 别名（兼容旧代码）
+# Convenience alias for the deprecated forward path
 SlidingBlockLatentAttention = SBLAttention
 
 

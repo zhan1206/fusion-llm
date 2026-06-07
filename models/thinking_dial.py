@@ -733,20 +733,38 @@ class ThinkingDialModel(nn.Module):
             thinking_depth: (batch,) 推理深度（0-3）
             
         返回：
-            包含 loss, logits 的字典
+            CausalLMOutputWithPast
         """
-        # [F1 FIX] Apply thinking depth control via learned embedding + gate
-        # Inject thinking_depth bias into the final logits
-        if thinking_depth is not None and hasattr(base_outputs, 'logits'):
+        # [F1 FIX] Call base model first, then inject thinking depth bias
+        base_outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+        
+        if thinking_depth is not None:
             depth_idx = thinking_depth.long().clamp(0, self.thinking_config.num_thinking_depths - 1)
             depth_embedding = self.thinking_embedding(depth_idx)  # (batch, hidden_size)
-            # Project depth embedding to vocabulary space
+            # Project depth embedding to vocabulary space via tied weights
             depth_bias = nn.functional.linear(
                 depth_embedding.unsqueeze(1),  # (batch, 1, hidden_size)
-                self.thinking_embedding.weight.t(),  # (hidden_size, vocab_size)
-            ).squeeze(1)  # (batch, vocab_size)
-            # Add depth bias to logits, scaled by gate (create new tensor since CausalLMOutputWithPast is immutable)
-            base_outputs.logits = base_outputs.logits + self.thinking_gate * depth_bias.unsqueeze(1)
+                self.thinking_embedding.weight.t(),  # (hidden_size, num_depths) -> transpose gives (num_depths, hidden_size)
+            ).squeeze(1)  # (batch, num_depths)
+            # To properly project to vocab space, use base model's lm_head
+            # Simpler: add hidden_size bias via learned projection
+            depth_hidden = self.thinking_gate * depth_embedding  # (batch, hidden_size)
+            # Add as residual to logits via lm_head projection
+            if hasattr(self.base_model, 'lm_head'):
+                vocab_bias = self.base_model.lm_head(depth_hidden)  # (batch, vocab_size)
+                # Create new CausalLMOutputWithPast since it's immutable
+                from transformers.modeling_outputs import CausalLMOutputWithPast
+                base_outputs = CausalLMOutputWithPast(
+                    loss=base_outputs.loss,
+                    logits=base_outputs.logits + vocab_bias.unsqueeze(1),
+                    past_key_values=base_outputs.past_key_values,
+                    hidden_states=base_outputs.hidden_states,
+                    attentions=base_outputs.attentions,
+                )
         
         return base_outputs
 
