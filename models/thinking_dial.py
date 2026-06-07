@@ -13,6 +13,19 @@ Thinking Dial（动态推理强度控制）- 真实实现
 - 支持 HuggingFace Transformers 接口（generate 方式）
 - 提供 ThinkingDialProcessor 用于预处理，ThinkingDialModel 用于训练
 
+架构说明 (F1):
+- 当前实现为 per-batch 粒度 (每个样本同一深度)，非 per-token
+- 这是效率和训练稳定性的权衡：per-token 需要更复杂的梯度流
+- 如需 per-token 控制，可在 forward() 中接收 thinking_depth 作为 input_ids 对应的张量
+
+已知限制:
+- F3: T-KD 蒸馏依赖未发布的 teacher 模型权重
+  当前 train_t_kd_distillation.py 需要预训练的 teacher model
+  如无可用权重，模型仍可从随机初始化开始训练 (冷启动)
+- F2: SBLA 增量生成使用 lossy 的块潜向量近似
+  这是设计权衡：精确的全局潜向量需要 O(seq_len) 内存
+  当前实现用缓存的 block latents，在精度和效率间平衡
+
 使用方法：
     # 1. 预处理数据（注入 thinking token）
     processor = ThinkingDialProcessor(tokenizer)
@@ -318,17 +331,32 @@ class GRPOTrainer:
     参考：DeepSeekMath GRPO
     """
     
+    # S1 FIX: Built-in reward function registry
+    REWARD_FUNCTIONS = {}
+    
+    @classmethod
+    def register_reward_fn(cls, name: str, fn: callable):
+        """Register a custom reward function by name.
+        
+        Args:
+            name: Function name for lookup
+            fn: Callable(prompt: str, response: str) -> float
+        """
+        cls.REWARD_FUNCTIONS[name] = fn
+    
     def __init__(
         self,
         model: PreTrainedModel,
         grpo_config: Optional[GRPOConfig] = None,
         thinking_config: Optional[ThinkingConfig] = None,
         tokenizer=None,  # N16 FIX: Accept tokenizer for decode
+        reward_fn=None,  # S1 FIX: Accept reward function at init
     ):
         self.model = model
         self.grpo_config = grpo_config or GRPOConfig()
         self.thinking_config = thinking_config or ThinkingConfig()
         self.tokenizer = tokenizer  # N16 FIX
+        self.reward_fn = reward_fn  # S1 FIX: Store reward function
         
         # 优化器
         self.optimizer = None
@@ -480,6 +508,12 @@ class GRPOTrainer:
         """
         Compute reward for a generated response.
         
+        S1 FIX: Now supports three reward sources (in priority order):
+        1. reward_fn parameter (per-call override)
+        2. self.reward_fn (instance-level, set at init)
+        3. REWARD_FUNCTIONS registry (by name string)
+        4. Built-in heuristics (fallback)
+        
         Built-in reward heuristics (used when reward_fn is None):
         1. Length reward: prefer moderate length (not too short, not too long)
         2. Coherence reward: penalize excessive repetition
@@ -488,13 +522,18 @@ class GRPOTrainer:
         Args:
             prompt: Input prompt text
             response: Generated response text
-            reward_fn: Optional custom reward function(prompt, response) -> float
+            reward_fn: Optional custom reward function, or string key into REWARD_FUNCTIONS
             
         Returns:
             Reward score (float)
         """
-        if reward_fn is not None:
+        # S1 FIX: Priority: param > instance > registry > built-in
+        if callable(reward_fn):
             return reward_fn(prompt, response)
+        if reward_fn is not None and reward_fn in self.REWARD_FUNCTIONS:
+            return self.REWARD_FUNCTIONS[reward_fn](prompt, response)
+        if self.reward_fn is not None:
+            return self.reward_fn(prompt, response)
         
         score = 0.0
         
@@ -527,6 +566,11 @@ class GRPOTrainer:
             score += 0.1
         
         return score
+
+    # S1 FIX: Convenience method to set reward function after init
+    def set_reward_fn(self, reward_fn: callable):
+        """Set the reward function for this trainer instance."""
+        self.reward_fn = reward_fn
 
     def generate_samples(
         self,
