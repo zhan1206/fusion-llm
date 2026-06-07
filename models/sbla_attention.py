@@ -81,7 +81,7 @@ class SBLAttention(nn.Module):
         self.block_size = block_size
         self.latent_dim = latent_dim
         self.head_dim = hidden_size // num_heads
-        self.kv_head_dim = hidden_size // self.num_key_value_heads
+        self.kv_head_dim = self.head_dim  # GQA: KV heads share same head_dim as Q heads
         self.window_size = window_size or block_size  # 默认窗口=块大小
         self.mode = mode
         
