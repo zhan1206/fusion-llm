@@ -95,16 +95,44 @@ class TestThinkingDial(unittest.TestCase):
         print("[OK] Thinking Dial 解析测试通过")
     
     def test_inject_token(self):
-        """测试注入控制 token"""
+        """测试注入控制 token（deprecated shim 仍可用）"""
         from models.thinking_dial import apply_thinking_control
+        import warnings
         
-        result = apply_thinking_control(
-            "解释量子纠缠",
-            depth=1,
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            result = apply_thinking_control(
+                "解释量子纠缠",
+                depth=1,
+            )
         
         self.assertIn("<|think_depth_1|>", result)
-        print("[OK] Thinking Dial 注入测试通过")
+        print("[OK] Thinking Dial 注入测试通过 (deprecated shim)")
+    
+    def test_architecture_level_depth(self):
+        """测试架构级 Thinking Dial（主路径）"""
+        from models.thinking_dial import ThinkingDialModel, ThinkingConfig
+        from models.fusion_mini import FusionMini, FusionMiniConfig
+        import torch
+        
+        config = FusionMiniConfig(
+            vocab_size=100, hidden_size=64, num_hidden_layers=1,
+            num_attention_heads=2, intermediate_size=128,
+        )
+        model = FusionMini(config)
+        td_model = ThinkingDialModel(model)
+        
+        input_ids = torch.randint(0, 100, (1, 4))
+        attention_mask = torch.ones(1, 4, dtype=torch.long)
+        
+        # Different depths produce different logits
+        out_d0 = td_model(input_ids=input_ids, attention_mask=attention_mask, thinking_depth=torch.tensor([0]))
+        out_d3 = td_model(input_ids=input_ids, attention_mask=attention_mask, thinking_depth=torch.tensor([3]))
+        
+        self.assertFalse(torch.allclose(out_d0.logits, out_d3.logits),
+                        "Different thinking depths should produce different logits")
+        self.assertEqual(out_d0.logits.shape, out_d3.logits.shape)
+        print("[OK] Thinking Dial 架构级深度控制测试通过")
 
 
 class TestBilingualFilter(unittest.TestCase):

@@ -64,6 +64,24 @@ THINK_CLOSE = "|>"  # Closing bracket for think_depth token
 THINK_END = "<|think_end|>"  # End-of-thinking-block marker
 THINK_DEPTH_PATTERN = re.compile(r"<\|think_depth_(\d+)\|")  # N14 FIX: \d+ for future depth>=10
 
+# ============================================================
+# Thinking Dial Token Utilities
+#
+# DEPRECATION NOTICE (v2.1.2):
+# Text-injection approach (build_think_token + apply_thinking_control) is
+# DEPRECATED. Thinking Dial now operates exclusively at the architecture level
+# via ThinkingDialModel (thinking_embedding + thinking_gate → logits_hook).
+#
+# The token strings (<|think_depth_N|>, <|think_end|>) are still registered
+# in the tokenizer vocab for future use in training data annotation, but the
+# model does NOT parse them from text during forward/generate.
+#
+# Migration:
+#   Old: apply_thinking_control(text, depth=2) → "<|think_depth_2|>\ntext\n<|think_end|>"
+#   New: ThinkingDialModel.forward(input_ids, thinking_depth=2) or
+#        ThinkingDialModel.generate(input_ids, thinking_depth=2)
+# ============================================================
+
 # Depth 0-3 的描述
 THINK_DEPTH_DESCRIPTIONS = {
     0: "直接回答模式 - 快速响应，适用于闲聊、翻译、简单问答",
@@ -849,7 +867,7 @@ class ThinkingDialModel(nn.Module):
         
         # Thinking embedding（学习推理深度表示）
         self.thinking_embedding = nn.Embedding(
-            thinking_config.num_thinking_depths,
+            self.thinking_config.num_thinking_depths,
             base_model.config.hidden_size,
         )
         
@@ -980,15 +998,27 @@ def apply_thinking_control(
     depth: int,
 ) -> str:
     """
-    在文本中注入 thinking token
+    [DEPRECATED] 在文本中注入 thinking token
+    
+    此函数保留向后兼容，但文本注入方式已弃用。
+    推理深度控制现在通过 ThinkingDialModel 的架构级机制实现：
+    - thinking_embedding + thinking_gate → logits_hook
+    - 使用 ThinkingDialModel.generate(input_ids, thinking_depth=N)
     
     参数：
         text: 原始文本
         depth: 推理深度（0-3）
         
     返回：
-        带 thinking token 的文本
+        带 thinking token 的文本（向后兼容）
     """
+    import warnings
+    warnings.warn(
+        "apply_thinking_control() is deprecated. "
+        "Use ThinkingDialModel.forward/generate with thinking_depth parameter instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     think_token = build_think_token(depth)
     
     if depth == 0:
