@@ -295,6 +295,7 @@ class SBLAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        position_ids: Optional[torch.Tensor] = None,  # [N9 FIX] accepted for API completeness
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """Forward pass with pre-projected Q/K/V (e.g., after RoPE application).
 

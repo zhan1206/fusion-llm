@@ -214,6 +214,7 @@ class FusionMiniLayer(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        position_ids: Optional[torch.Tensor] = None,  # [N9 FIX]
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         # Pre-norm + SBLA Attention + residual
         residual = hidden_states
@@ -234,6 +235,8 @@ class FusionMiniLayer(nn.Module):
         attn_output, present_key_value = self.sbla_attention.forward_with_qkv(
             Q, K, V, attention_mask,
             past_key_value=past_key_value, use_cache=use_cache,
+            # N9 FIX: position_ids accepted for API completeness but not used here
+            # (Q/K already have position encoding applied externally)
         )
         
         hidden_states = residual + self.dropout(attn_output)
@@ -338,13 +341,17 @@ class FusionMini(PreTrainedModel):
             if use_cache:
                 present_key_values = present_key_values + (cache,)
         
-        # 4. Final Layer Norm
+        # Final Layer Norm
         hidden_states = self.ln_f(hidden_states)
         
         # 5. LM Head
         logits = self.lm_head(hidden_states)
         
         # 6. Compute loss (if labels provided)
+        # N9 NOTE: FusionMini uses position_ids=None throughout the forward chain.
+        # This is because FusionMini does not implement RoPE (fixed positional encoding).
+        # The signature is present for API consistency with FusionModel, but the
+        # actual position_ids argument is unused internally.
         loss = None
         if labels is not None:
             # Shift: predict next token

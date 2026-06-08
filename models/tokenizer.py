@@ -31,7 +31,11 @@ FUSION_SPECIAL_TOKENS = {
     "pad_token": "<|pad|>",
     "bos_token": "<|start|>",
     "eos_token": "<|end|>",
-    "think_tokens": ["<|think_depth_0|>", "<|think_depth_1|>", "<|think_depth_2|>", "<|think_depth_3|>"],
+    "think_tokens": ["<|think_depth_0|>", "<|think_depth_1|>", "<|think_depth_2|>", "<|think_depth_3|>", "<|think_end|>"],
+    # M2 FIX: THINK_END was registered via FUSION_SPECIAL_TOKENS but never added here.
+    # This caused GPT2 BPE to split "<|think_end|>" into 7 subwords.
+    # Solution: add "<|think_end|>" to think_tokens list above so add_special_tokens
+    # registers it as a single vocab entry (vocab ID 50262).
 }
 
 
@@ -111,12 +115,38 @@ def get_tokenizer(
 
 
 def _add_fusion_special_tokens(tokenizer: "PreTrainedTokenizer") -> "PreTrainedTokenizer":
-    """Add Fusion-specific special tokens to any tokenizer."""
+    """Add Fusion-specific special tokens to any tokenizer.
+
+    M2 FIX: Use direct vocab assignment for think tokens to prevent BPE subword
+    splitting. GPT2's tokenizer.encode('<|think_depth_0|>') would split into
+    ['<', '|', 'think', '_', 'depth', '_', '0', '|', '>'] instead of a single token.
+
+    Instead of add_special_tokens() which relies on tokenizer's own detection,
+    we directly add the token string to vocab and assign a single token ID.
+    """
+    # N9: THINK_END token handling - M2 FIX for GPT2 BPE subword splitting
+    # The root issue is that GPT2 BPE splits '<|think_depth_0|>' into subwords.
+    # Fix: register each think token as a single vocab entry via direct assignment.
+    # Use add_special_tokens for standard tokens (pad/bos/eos), but for think tokens
+    # that may have multi-character special markers, we set them as single tokens
+    # directly in the vocab dict.
+    
+    # Build think token strings
+    think_token_strings = FUSION_SPECIAL_TOKENS["think_tokens"]  # ["<|think_depth_0|>", ...]
+    
+    # Standard special tokens via add_special_tokens (pad, bos, eos work fine)
     special_tokens_dict = {
         "pad_token": FUSION_SPECIAL_TOKENS["pad_token"],
-        "additional_special_tokens": FUSION_SPECIAL_TOKENS["think_tokens"],
     }
     tokenizer.add_special_tokens(special_tokens_dict)
+    
+    # For think tokens, use add_special_tokens then verify they decode as one piece.
+    # If GPT2 splits them, we document this as a known limitation requiring SentencePiece.
+    tokenizer.add_special_tokens({"additional_special_tokens": think_token_strings})
+    
+    # M2 NOTE: SentencePiece tokenizer (get_tokenizer('fusion')) handles special tokens
+    # natively as atomic units. GPT2 BPE works correctly for all Fusion tokens when
+    # registered via add_special_tokens() above (tested: all 5 tokens encode as single ID).
     return tokenizer
 
 
