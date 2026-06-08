@@ -1,0 +1,41 @@
+# Fusion-LLM Configuration Registry
+# Model version management: download links, hashes, metadata
+
+models:
+  fusion-mini:
+    # Small model for local testing, trained on synthetic arithmetic
+    description: "FusionMini (4.5M params) — synthetic arithmetic training"
+    size: "4.5M"
+    training_tokens: "~100K synthetic"
+    accuracy:
+      addition_1to10: "~65% (200 epochs, 80 samples)"
+      addition_1to20: "~35% (300 epochs, 200 samples)"
+    url: "https://github.com/zhan1206/fusion-llm/releases"
+    weights_dir: "output/mini_model"
+    sha256: ""  # TODO: compute after first release
+    released_at: "2026-05-30"
+    license: "Apache 2.0"
+    notes: "No pretrained weights. Start here for quick verification."
+
+  fusion-0.5b:
+    # TODO: after pretraining on real data
+    description: "500M parameter model — SBLA + Thinking Dial"
+    size: "500M"
+    url: ""
+    sha256: ""
+    released_at: "TBD"
+    license: "Apache 2.0"
+    training_tokens: "TBD"
+    accuracy:
+      gsm8k: "TBD"
+    notes: "Requires GPU (8GB+) for training. Pretraining data TBD."
+
+  fusion-1.5b:
+    description: "1.5B parameter model — production scale"
+    size: "1.5B"
+    url: ""
+    sha256: ""
+    released_at: "TBD"
+    license: "Apache 2.0"
+    training_tokens: "TBD"
+    notes: "Requires multi-GPU cluster for training."
