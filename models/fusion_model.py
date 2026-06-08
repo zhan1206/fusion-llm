@@ -548,8 +548,9 @@ class FusionModel(PreTrainedModel, GenerationMixin):
                 loss=None,
                 logits=None,
                 past_key_values=past_key_values,
-                sequences=generated,
-            )
+                hidden_states=None,
+                attentions=None,
+            ), generated  # Return tuple (output, sequences)
         return generated
     
     def prepare_inputs_for_generation(self, input_ids: torch.Tensor, past_key_values=None, **kwargs):
