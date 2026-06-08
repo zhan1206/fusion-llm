@@ -529,6 +529,7 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         return_dict_in_generate: bool = False,
         logits_hook: Optional[callable] = None,  # N10 FIX: Hook for ThinkingDial logit bias
         past_key_values: Optional[Tuple] = None,  # N17 FIX: Accept pre-computed KV cache
+        thinking_depth: Optional[int] = None,  # Thinking Dial depth control
         **kwargs,
     ) -> CausalLMOutputWithPast:
         """Generate text with KV cache and SBLA incremental support.
@@ -568,6 +569,21 @@ class FusionModel(PreTrainedModel, GenerationMixin):
             generated = input_ids.clone()
         
         logits_hook = kwargs.pop('logits_hook', logits_hook)
+        
+        # Thinking Dial integration: if thinking_depth is provided and model has
+        # the Thinking Dial embedding/gate, build a logits_hook automatically.
+        # This unifies the two control mechanisms (text token vs architecture-level)
+        # so users can simply pass thinking_depth=N without wrapping in ThinkingDialModel.
+        if thinking_depth is not None and hasattr(self, 'thinking_embedding'):
+            from models.thinking_dial import ThinkingDialModel, ThinkingConfig
+            hook = ThinkingDialModel._build_thinking_logits_hook(
+                thinking_depth, batch_size, device,
+                getattr(self, 'thinking_config', ThinkingConfig()),
+                self.thinking_embedding, self.thinking_gate,
+                self.lm_head,
+            )
+            if hook is not None:
+                logits_hook = hook  # Thinking Dial hook takes precedence
         
         for _ in range(max_new_tokens):
             if past_key_values is not None:
