@@ -242,8 +242,8 @@ class BilingualTrueFilter:
         if re.match(r'^[\s\d\.\-\•]+$', text):
             return True
         
-        # 过短的有效内容
-        if len(re.findall(r'[\u4e00-\u9fff]', text)) < 50:
+        # 过短的有效内容（少于10个汉字视为低质量）
+        if len(re.findall(r'[\u4e00-\u9fff]', text)) < 10:
             return True
         
         return False
@@ -293,8 +293,8 @@ class BilingualTrueFilter:
         if re.match(r'^[\s\d\.\-\•]+$', text):
             return True
         
-        # Too short
-        if len(text.split()) < 20:
+        # Too short (less than 5 words is likely not useful)
+        if len(text.split()) < 5:
             return True
         
         # Excessive repetition
