@@ -43,6 +43,9 @@ from .fusion_mini import FusionMini, FusionMiniConfig
 from .fusion_model import FusionModel, FusionConfig
 
 # SBLA 注意力
+# FusionAttention：公共入口（含 RoPE + KV cache）
+# SBLAttention：内部实现（纯 SBLA 逻辑）
+from .fusion_model import FusionAttention
 from .sbla_attention import SBLAttention
 
 # Thinking Dial
@@ -52,8 +55,6 @@ from .thinking_dial import (
     ThinkingConfig,
     GRPOTrainer,
     GRPOConfig,
-    build_think_token,
-    apply_thinking_control,
     extract_thinking_depth,
 )
 
@@ -67,7 +68,8 @@ __all__ = [
     "FusionConfig",
     
     # SBLA 注意力
-    "SBLAttention",
+    "FusionAttention",   # 公共入口（含 RoPE + KV cache）
+    "SBLAttention",      # 内部实现（纯 SBLA 逻辑）
     
     # Thinking Dial
     "ThinkingDialProcessor",
@@ -75,7 +77,5 @@ __all__ = [
     "ThinkingConfig",
     "GRPOTrainer",
     "GRPOConfig",
-    "build_think_token",
-    "apply_thinking_control",
     "extract_thinking_depth",
 ]

@@ -41,6 +41,10 @@ rouge-score>=0.1.2
 tensorboard>=2.15.0
 wandb>=0.16.0
 
+
+# ONNX 导出
+onnx>=1.14.0
+onnxruntime>=1.16.0
 # 工具
 pyyaml>=6.0.0
 click>=8.1.0
