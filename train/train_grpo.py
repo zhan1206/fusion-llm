@@ -126,18 +126,22 @@ def main():
     # 加载模型
     model, config, device = load_fusion_model(args.model_path, args.device)
 
-    # GRPO 配置
+    # GRPO config
     grpo_config = GRPOConfig(
-        learning_rate=args.learning_rate,
         kl_coef=args.kl_coef,
-        reward_fn_name=args.reward_fn,
-        num_generations=args.num_generations,
     )
 
-    # 创建 GRPOTrainer
+    # Optimizer (separate from GRPO config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+
+    # Reward function (string name, resolved by GRPOTrainer.compute_reward)
+    reward_fn = args.reward_fn
+
+    # Create GRPOTrainer
     trainer = GRPOTrainer(
         model=model,
-        config=grpo_config,
+        grpo_config=grpo_config,
+        reward_fn=reward_fn,
     )
 
     # 加载数据
