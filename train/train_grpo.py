@@ -85,6 +85,14 @@ def load_fusion_model(model_path: str, device: str = "auto"):
 
     # Fallback to HF AutoModel
     if model is None:
+        import warnings
+        warnings.warn(
+            "无法加载 FusionModel/FusionMini，回退到 AutoModelForCausalLM。\n"
+            "Thinking Dial（推理深度控制）在此模式下不可用。\n"
+            "建议确认模型路径指向有效的 Fusion 模型。",
+            UserWarning
+        )
+        logger.warning("[WARNING] 回退到 AutoModelForCausalLM，Thinking Dial 将不可用！")
         from transformers import AutoModelForCausalLM
         model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
         config = model.config

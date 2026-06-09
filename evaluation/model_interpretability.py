@@ -9,6 +9,7 @@ SHAP: SHapley Additive exPlanations
 """
 import sys
 import math
+import hashlib
 import torch
 import numpy as np
 from pathlib import Path
@@ -86,7 +87,7 @@ class SimplifiedLIME:
         input_ids = []
         for t in tokens:
             # 简单 hash 到 vocab 范围
-            token_id = hash(t) % vocab_size
+            token_id = int(hashlib.md5(t.encode()).hexdigest(), 16) % vocab_size
             input_ids.append(token_id)
         
         input_ids = torch.tensor([input_ids])
@@ -188,7 +189,7 @@ class SimplifiedSHAP:
         
         input_ids = []
         for t in tokens:
-            token_id = hash(t) % vocab_size
+            token_id = int(hashlib.md5(t.encode()).hexdigest(), 16) % vocab_size
             input_ids.append(token_id)
         
         input_ids = torch.tensor([input_ids])

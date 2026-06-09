@@ -93,24 +93,46 @@ class DyQuantConverter:
         print(f"   按头量化：{config.per_head}")
     
     def load_model(self):
-        """加载模型"""
+        """加载模型（优先 FusionModel/FusionMini，回退 AutoModelForCausalLM）"""
         print(f"\n[DyQuant] 加载模型：{self.config.model_path}")
         
+        self.model = None
+        
+        # Try FusionMini first
+        try:
+            from models.fusion_mini import FusionMini
+            self.model = FusionMini._load_from_safetensors(self.config.model_path)
+            self.model.eval()
+            print(f"[DyQuant] FusionMini 加载成功")
+            return self.model
+        except Exception as e1:
+            pass  # fallback
+        
+        # Try FusionModel
+        try:
+            from models.fusion_model import FusionModel
+            self.model = FusionModel.from_pretrained(self.config.model_path)
+            self.model.eval()
+            print(f"[DyQuant] FusionModel 加载成功")
+            return self.model
+        except Exception as e2:
+            pass  # fallback
+        
+        # Fallback to AutoModelForCausalLM
         try:
             from transformers import AutoModelForCausalLM
-            
-            # 加载真实模型
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.config.model_path,
                 torch_dtype=torch.bfloat16,
-                device_map="cpu",  # 量化在 CPU 上进行
+                device_map="cpu",
                 trust_remote_code=True,
             )
             self.model.eval()
-            print(f"[DyQuant] 模型加载成功")
+            print(f"[DyQuant] AutoModelForCausalLM 加载成功（回退模式）")
+            print(f"[DyQuant] 警告：非 Fusion 模型，SBLA/ThinkingDial 量化路径未验证")
             return self.model
-        except Exception as e:
-            print(f"[DyQuant] 模型加载失败：{e}")
+        except Exception as e3:
+            print(f"[DyQuant] 模型加载失败：{e3}")
             import traceback; traceback.print_exc()
             self.model = None
             return None

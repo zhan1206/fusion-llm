@@ -1,4 +1,4 @@
-﻿"""
+"""
 Fusion 模型 LoRA/QLoRA 微调脚本
 
 支持：
@@ -367,6 +367,14 @@ def train(args):
 
 
 def main():
+    """Main entry point with CUDA availability check."""
+    # Check CUDA availability
+    if not torch.cuda.is_available():
+        print("[ERROR] CUDA is not available. This training script requires a GPU.")
+        print("[INFO] For CPU training, use train_mini.py (FusionMini).")
+        sys.exit(1)
+    print(f"[INFO] CUDA available: {torch.cuda.get_device_name(0)}")
+
     parser = argparse.ArgumentParser(description="Fusion 模型 LoRA/QLoRA 微调")
     
     # 模型参数

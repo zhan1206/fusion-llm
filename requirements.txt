@@ -40,6 +40,7 @@ rouge-score>=0.1.2
 # 可视化（可选）
 tensorboard>=2.15.0
 wandb>=0.16.0
+gradio>=4.0.0  # inference/dashboard.py 依赖
 
 
 # ONNX 导出

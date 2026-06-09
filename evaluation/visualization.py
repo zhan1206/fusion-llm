@@ -162,8 +162,8 @@ def save_visualization_report(model, attention_weights, losses, output_path):
         import sys
         original_stdout = sys.stdout
         sys.stdout = f
-        
-        print("=" * 60)
+        try:
+            print("=" * 60)
         print("Fusion-LLM 可视化报告")
         print("=" * 60)
         print()
@@ -184,8 +184,9 @@ def save_visualization_report(model, attention_weights, losses, output_path):
         print("报告结束")
         print("=" * 60)
         
-        # 恢复 stdout
-        sys.stdout = original_stdout
+        finally:
+            # 恢复 stdout
+            sys.stdout = original_stdout
     
     print(f"   报告已保存到: {output_path}")
     print()
