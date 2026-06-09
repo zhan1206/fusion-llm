@@ -94,21 +94,6 @@ class FusionMiniConfig(PretrainedConfig):
         # Thinking Dial
         self.enable_thinking_dial = enable_thinking_dial
         self.num_thinking_depths = num_thinking_depths
-        
-    @classmethod
-    def from_pretrained(cls, config_path: str, **kwargs):
-        """
-        从配置文件加载
-        """
-        config_file = Path(config_path) / "config.json"
-        
-        if config_file.exists():
-            with open(config_file, 'r') as f:
-                config_dict = json.load(f)
-            
-            return cls(**config_dict)
-        
-        raise FileNotFoundError(f"配置文件未找到：{config_file}")
 
 
 # H1-H3: Register FusionMiniConfig with AutoConfig
@@ -284,8 +269,9 @@ class FusionMini(PreTrainedModel):
             bias=False,
         )
         
-        # 初始化权重
-        self.init_weights()
+        # PreTrainedModel.post_init() calls _init_weights automatically
+        # No manual init_weights() call needed
+        
         
     def init_weights(self):
         """
@@ -309,7 +295,55 @@ class FusionMini(PreTrainedModel):
             if hasattr(module, 'bias') and module.bias is not None:
                 module.bias.data.zero_()
             module.weight.data.fill_(1.0)
+
+    @classmethod
+    def _load_from_safetensors(cls, path, config=None, **kwargs):
+        """
+        从 safetensors 权重文件直接加载（绕过 HF 5.x 不兼容的加载路径）
+        """
+        from safetensors.torch import load_file as sf_load
+        import os
+        from transformers import AutoConfig
         
+        if config is None:
+            config = kwargs.pop('config', None) or AutoConfig.from_pretrained(path)
+        if isinstance(config, dict):
+            config = FusionMiniConfig(**config)
+        
+        model = cls(config)
+        
+        sf_path = os.path.join(path, 'model.safetensors')
+        if os.path.exists(sf_path):
+            sd = sf_load(sf_path)
+        else:
+            pt_path = os.path.join(path, 'pytorch_model.bin')
+            if os.path.exists(pt_path):
+                sd = torch.load(pt_path, map_location='cpu', weights_only=True)
+            else:
+                raise FileNotFoundError(f'No model weights found in {path}')
+        
+        model.load_state_dict(sd, strict=False)
+        return model
+    
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        """
+        从预训练权重加载（内部使用 _load_from_safetensors）
+        """
+        return cls._load_from_safetensors(pretrained_model_name_or_path, *args, **kwargs)
+    
+    @classmethod
+    def _from_config(cls, config_path: str, **kwargs):
+        """
+        从配置文件加载（旧接口，保留向后兼容）
+        """
+        config_file = Path(config_path) / "config.json"
+        if config_file.exists():
+            with open(config_file, 'r') as f:
+                config_dict = json.load(f)
+            return cls(**config_dict)
+        raise FileNotFoundError(f"配置文件未找到：{config_file}")
+
     def forward(
         self,
         input_ids: torch.Tensor,
