@@ -42,6 +42,8 @@ setup(
         "inference": [
             "onnx>=1.14.0",
             "onnxruntime>=1.16.0",
+            "gradio>=4.0.0",
+            "ollama>=0.1.0",
         ],
         # Evaluation
         "eval": [
@@ -77,12 +79,13 @@ setup(
             "matplotlib>=3.7.0",
             "pytest>=7.4.0",
             "pytest-cov>=4.1.0",
+            "gradio>=4.0.0",
+            "ollama>=0.1.0",
         ],
     },
     entry_points={
         "console_scripts": [
             "fusion-train=train.train_mini:main",
-            "fusion-eval=evaluation.metrics:main",
         ],
     },
     classifiers=[

@@ -352,19 +352,18 @@ class DyQuantConverter:
                     self.bias = None
             
             def _quantize_weight(self, weight, bits):
-                """对称量化"""
+                """对称量化（per-channel）"""
                 # 计算缩放因子（per-channel）
-                max_val = weight.abs().max()
-                if max_val == 0:
-                    scale = torch.tensor(1.0)
-                else:
-                    qmax = 2 ** (bits - 1) - 1
-                    scale = max_val / qmax
+                max_vals = weight.abs().max(dim=1, keepdim=True).values  # (out_features, 1)
+                # 避免除零
+                max_vals = torch.where(max_vals == 0, torch.ones_like(max_vals), max_vals)
+                qmax = 2 ** (bits - 1) - 1
+                scales = max_vals / qmax  # (out_features, 1)
                 
                 # 量化
-                q_weight = torch.round(weight / scale).clamp(-2**(bits-1), 2**(bits-1)-1)
+                q_weight = torch.round(weight / scales).clamp(-qmax, qmax)
                 
-                return q_weight.to(torch.int8), scale.to(weight.dtype), torch.tensor(0)
+                return q_weight.to(torch.int8), scales.to(weight.dtype), torch.tensor(0, dtype=weight.dtype, device=weight.device)
             
             def forward(self, x):
                 # 反量化 + 矩阵乘法
