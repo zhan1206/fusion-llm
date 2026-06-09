@@ -1,4 +1,4 @@
-﻿"""
+"""
 Fusion 推理部署：Ollama 一键部署工具
 
 功能：
@@ -76,7 +76,12 @@ def convert_to_gguf(
 ):
     """
     将 HuggingFace 模型转换为 GGUF 格式
-    
+
+    .. warning::
+        Fusion 使用自定义 SBLA（Sliding Block Latent Attention）注意力机制。
+        该架构与标准 LLaMA GGUF 格式不完全兼容，GGUF 转换会丢失 SBLA 特性。
+        仅在使用 Fusion 提供的 convert-hf-to-gguf.py（而非标准版）时支持。
+
     参数：
         model_path: HuggingFace 模型路径
         output_path: 输出路径
