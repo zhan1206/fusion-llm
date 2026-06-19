@@ -275,7 +275,9 @@ def chat_fn(prompt, max_tokens, temperature, top_p):
         with torch.no_grad():
             for _ in range(int(max_tokens)):
                 inp = torch.tensor([generated[-48:]], dtype=torch.long, device=device)
-                logits = mdl(inp)
+                seq_len = inp.shape[1]
+                attn_mask = torch.tril(torch.ones(seq_len, seq_len, device=device)).unsqueeze(0).unsqueeze(0)
+                logits = mdl(inp, attention_mask=attn_mask)
                 next_logits = logits[0, -1, :] / max(float(temperature), 0.01)
 
                 if top_p < 1.0:
