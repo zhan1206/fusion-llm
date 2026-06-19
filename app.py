@@ -364,4 +364,6 @@ with gr.Blocks(title="Fusion-LLM Demo", theme=gr.themes.Soft()) as demo:
 
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    # On HF Spaces, launch() auto-detects the correct host/port.
+    # No need to specify server_name/server_port (causes ValueError on HF).
+    demo.launch()
