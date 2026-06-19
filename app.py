@@ -3,6 +3,22 @@ Fusion-LLM Demo - Hugging Face Space
 Train and chat with a custom Transformer (SBLA + Thinking Dial).
 """
 
+# Compatibility shim: huggingface_hub >=1.0 removed HfFolder, but gradio 4.44 still imports it.
+# We patch it before importing gradio so the import succeeds on any HF Spaces base image.
+import huggingface_hub
+if not hasattr(huggingface_hub, 'HfFolder'):
+    class _HfFolder:
+        @staticmethod
+        def get_token():
+            return None
+        @staticmethod
+        def save_token(token):
+            pass
+        @staticmethod
+        def delete_token():
+            pass
+    huggingface_hub.HfFolder = _HfFolder
+
 import gradio as gr
 import torch
 import torch.nn as nn
