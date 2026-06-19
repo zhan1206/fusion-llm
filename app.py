@@ -143,6 +143,8 @@ class BPETokenizer:
         self.unk_id = 1
         self.eos_id = 2
         self.bos_id = 3
+        self.q_sep_id = 4   # <|q|> question separator
+        self.a_sep_id = 5   # <|a|> answer separator
         self.word_cache = {}
 
     @staticmethod
@@ -188,6 +190,8 @@ class BPETokenizer:
         self.vocab['<unk>'] = self.unk_id
         self.vocab['<eos>'] = self.eos_id
         self.vocab['<bos>'] = self.bos_id
+        self.vocab['<|q|>'] = self.q_sep_id
+        self.vocab['<|a|>'] = self.a_sep_id
 
         current_size = len(self.vocab)
         num_merges = target_vocab_size - current_size
@@ -249,6 +253,32 @@ class BPETokenizer:
 
         self.word_cache[word] = tokens
         return tokens
+
+    def encode_qa(self, question, answer, max_len=128):
+        """Encode a QA pair with special separator tokens: bos <|q|> question <|a|> answer eos"""
+        ids = [self.bos_id, self.q_sep_id]
+        for w in question.split():
+            for tok in self._tokenize_word(w):
+                ids.append(self.token_to_id.get(tok, self.unk_id))
+            ids.append(self.token_to_id.get(' ', self.unk_id))
+        ids.append(self.a_sep_id)
+        for w in answer.split():
+            for tok in self._tokenize_word(w):
+                ids.append(self.token_to_id.get(tok, self.unk_id))
+            ids.append(self.token_to_id.get(' ', self.unk_id))
+        ids.append(self.eos_id)
+        return ids[:max_len]
+
+    def encode_prompt(self, prompt, max_len=96):
+        """Encode a chat prompt with <|q|> prefix to trigger answer generation."""
+        ids = [self.bos_id, self.q_sep_id]
+        for w in prompt.split():
+            for tok in self._tokenize_word(w):
+                ids.append(self.token_to_id.get(tok, self.unk_id))
+            ids.append(self.token_to_id.get(' ', self.unk_id))
+        # Add <|a|> to signal: now generate the answer
+        ids.append(self.a_sep_id)
+        return ids[:max_len]
 
     def encode(self, text, max_len=128):
         words = text.split()
@@ -543,12 +573,11 @@ def train_fn(learning_rate, epochs, batch_size_val):
         mdl = get_model()
         mdl.train()
 
-        # Pre-encode all training pairs
+        # Pre-encode all training pairs with QA separators
         encoded_pairs = []
         for q, a in TRAIN_DATA:
-            text = q + " " + a
-            ids = tokenizer.encode(text, max_len=128)
-            if len(ids) > 2:
+            ids = tokenizer.encode_qa(q, a, max_len=128)
+            if len(ids) > 4:  # need at least bos+q_sep+a_sep+1 token
                 encoded_pairs.append(torch.tensor(ids))
 
         optimizer = torch.optim.AdamW(mdl.parameters(), lr=learning_rate, weight_decay=0.01)
@@ -610,7 +639,7 @@ def chat_fn(prompt, max_tokens, temperature, top_p):
         mdl = get_model()
         mdl.eval()
 
-        input_ids = tokenizer.encode(prompt, max_len=96)
+        input_ids = tokenizer.encode_prompt(prompt, max_len=96)
         generated = list(input_ids)
         with torch.no_grad():
             for _ in range(int(max_tokens)):
