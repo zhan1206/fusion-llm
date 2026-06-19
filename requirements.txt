@@ -4,4 +4,4 @@ gradio>=4.40.0
 numpy>=1.24.0
 safetensors>=0.4.0
 accelerate>=0.25.0
-tqdm>=65.0.0
+tqdm>=4.65.0
