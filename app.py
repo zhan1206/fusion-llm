@@ -364,5 +364,10 @@ with gr.Blocks(title="Fusion-LLM Demo", theme=gr.themes.Soft()) as demo:
 
 
 if __name__ == "__main__":
-    # On HF Spaces with gradio 4.40.0, launch() auto-detects environment correctly.
-    demo.launch()
+    # gradio 4.44.0 (hardcoded by HF Spaces Dockerfile) has a localhost-check bug.
+    # Set share=False explicitly to suppress the faulty check on Spaces.
+    try:
+        demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
+    except ValueError:
+        # Fallback: share=True works even when the faulty check fails
+        demo.launch(server_name="0.0.0.0", server_port=7860, share=True)
