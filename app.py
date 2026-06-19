@@ -113,7 +113,7 @@ class FusionMini(nn.Module):
         self.ln_f = nn.LayerNorm(hidden_size)
         self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
 
-        # Causal mask
+        # Causal mask: shape (1, 1, max_seq_len, max_seq_len) for broadcasting over (B, heads, T, T)
         register_buffer = lambda m, n, t: m.register_buffer(n, t)
         causal = torch.tril(torch.ones(max_seq_len, max_seq_len)).unsqueeze(0).unsqueeze(0)
         register_buffer(self, "causal_mask", causal)
@@ -122,7 +122,7 @@ class FusionMini(nn.Module):
         B, T = input_ids.shape
         positions = torch.arange(T, device=input_ids.device).unsqueeze(0)
         x = self.token_embed(input_ids) + self.pos_embed(positions)
-        mask = self.causal_mask[:, :T, :T].to(input_ids.device)
+        mask = self.causal_mask[:, :, :T, :T].to(input_ids.device)  # (1, 1, T, T) -> broadcast to (B, heads, T, T)
         for block in self.blocks:
             x = block(x, mask)
         x = self.ln_f(x)
