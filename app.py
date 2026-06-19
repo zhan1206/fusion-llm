@@ -1,6 +1,6 @@
 """
-Fusion-LLM Demo v2 - Hugging Face Space
-Upgraded: BPE tokenizer, ~12M params, 200+ training samples, 100-epoch max.
+Fusion-LLM Demo v3 - Hugging Face Space
+Upgraded: BPE vocab=2000, seq_len=256, answer-only prediction for better generation.
 """
 
 # Compatibility shim: huggingface_hub >=1.0 removed HfFolder, but gradio 4.44 still imports it.
@@ -96,8 +96,8 @@ class FusionBlock(nn.Module):
 
 class FusionMini(nn.Module):
     """Fusion-LLM model for demo - upgraded to ~12M params."""
-    def __init__(self, vocab_size=500, hidden_size=256, num_layers=4, num_heads=8,
-                 max_seq_len=128, ff_dim=512):
+    def __init__(self, vocab_size=2000, hidden_size=256, num_layers=4, num_heads=8,
+                 max_seq_len=256, ff_dim=512):
         super().__init__()
         self.config = type('obj', (object,), {
             'vocab_size': vocab_size, 'hidden_size': hidden_size,
@@ -133,7 +133,7 @@ class FusionMini(nn.Module):
 class BPETokenizer:
     """Simple BPE tokenizer trained on the demo dataset."""
 
-    def __init__(self, vocab_size=500):
+    def __init__(self, vocab_size=2000):
         self.vocab_size = vocab_size
         self.merges = []
         self.vocab = {}
@@ -176,7 +176,7 @@ class BPETokenizer:
             new_vocab_freqs[tuple(new_word)] = freq
         return new_vocab_freqs
 
-    def train(self, texts, target_vocab_size=500):
+    def train(self, texts, target_vocab_size=2000):
         word_freqs = self._get_word_freqs(texts)
         vocab_freqs = {tuple(list(w)): f for w, f in word_freqs.items()}
 
@@ -185,7 +185,7 @@ class BPETokenizer:
             for ch in word_tuple:
                 base_tokens.add(ch)
 
-        self.vocab = {t: i + 4 for i, t in enumerate(sorted(base_tokens))}
+        self.vocab = {t: i + 6 for i, t in enumerate(sorted(base_tokens))}
         self.vocab['<pad>'] = self.pad_id
         self.vocab['<unk>'] = self.unk_id
         self.vocab['<eos>'] = self.eos_id
@@ -254,7 +254,7 @@ class BPETokenizer:
         self.word_cache[word] = tokens
         return tokens
 
-    def encode_qa(self, question, answer, max_len=128):
+    def encode_qa(self, question, answer, max_len=256):
         """Encode a QA pair with special separator tokens: bos <|q|> question <|a|> answer eos"""
         ids = [self.bos_id, self.q_sep_id]
         for w in question.split():
@@ -269,7 +269,7 @@ class BPETokenizer:
         ids.append(self.eos_id)
         return ids[:max_len]
 
-    def encode_prompt(self, prompt, max_len=96):
+    def encode_prompt(self, prompt, max_len=192):
         """Encode a chat prompt with <|q|> prefix to trigger answer generation."""
         ids = [self.bos_id, self.q_sep_id]
         for w in prompt.split():
@@ -295,7 +295,7 @@ class BPETokenizer:
         for i in ids:
             if i in (self.pad_id, self.eos_id):
                 break
-            if i == self.bos_id:
+            if i == self.bos_id or i == self.q_sep_id or i == self.a_sep_id:
                 continue
             tokens.append(self.id_to_token.get(i, '<unk>'))
         return ''.join(tokens).replace('<unk>', '?')
@@ -536,8 +536,8 @@ TRAIN_DATA = _generate_qa_pairs()
 
 # Train BPE tokenizer on all training data
 _all_texts = [q + " " + a for q, a in TRAIN_DATA]
-tokenizer = BPETokenizer(vocab_size=500)
-tokenizer.train(_all_texts, target_vocab_size=500)
+tokenizer = BPETokenizer(vocab_size=2000)
+tokenizer.train(_all_texts, target_vocab_size=2000)
 
 model = None
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -549,7 +549,7 @@ MODEL_CONFIG = {
     "hidden_size": 256,
     "num_layers": 4,
     "num_heads": 8,
-    "max_seq_len": 128,
+    "max_seq_len": 256,
     "ff_dim": 512,
 }
 
@@ -573,11 +573,11 @@ def train_fn(learning_rate, epochs, batch_size_val):
         mdl = get_model()
         mdl.train()
 
-        # Pre-encode all training pairs with QA separators
+        # Pre-encode all training pairs with QA separators (answer-only loss)
         encoded_pairs = []
         for q, a in TRAIN_DATA:
-            ids = tokenizer.encode_qa(q, a, max_len=128)
-            if len(ids) > 4:  # need at least bos+q_sep+a_sep+1 token
+            ids = tokenizer.encode_qa(q, a, max_len=256)
+            if len(ids) > 5:  # need at least bos+q_sep+a_sep+1 answer token + eos
                 encoded_pairs.append(torch.tensor(ids))
 
         optimizer = torch.optim.AdamW(mdl.parameters(), lr=learning_rate, weight_decay=0.01)
@@ -596,12 +596,27 @@ def train_fn(learning_rate, epochs, batch_size_val):
 
                 for j in batch_idx:
                     ids = encoded_pairs[j].to(device)
-                    if len(ids) < 2:
+                    if len(ids) < 6:
                         continue
                     inputs = ids[:-1].unsqueeze(0)
                     targets = ids[1:].unsqueeze(0)
                     logits = mdl(inputs)
-                    loss = nn.CrossEntropyLoss()(logits.view(-1, tokenizer.vocab_size), targets.view(-1))
+                    # Find the <|a|> separator position and only compute loss on answer tokens
+                    a_sep_pos = None
+                    for pos_idx, tid in enumerate(inputs[0]):
+                        if tid.item() == tokenizer.a_sep_id:
+                            a_sep_pos = pos_idx
+                            break
+                    if a_sep_pos is not None and a_sep_pos < targets.shape[1]:
+                        # Only compute loss from after <|a|> to end of sequence
+                        ans_logits = logits[0, a_sep_pos:, :]
+                        ans_targets = targets[0, a_sep_pos:]
+                        if ans_logits.shape[0] > 0:
+                            loss = nn.CrossEntropyLoss()(ans_logits.unsqueeze(0).view(-1, tokenizer.vocab_size), ans_targets.unsqueeze(0).view(-1))
+                        else:
+                            loss = nn.CrossEntropyLoss()(logits.view(-1, tokenizer.vocab_size), targets.view(-1))
+                    else:
+                        loss = nn.CrossEntropyLoss()(logits.view(-1, tokenizer.vocab_size), targets.view(-1))
                     batch_loss += loss
                     total_loss += loss.item()
                     count += 1
@@ -639,11 +654,11 @@ def chat_fn(prompt, max_tokens, temperature, top_p):
         mdl = get_model()
         mdl.eval()
 
-        input_ids = tokenizer.encode_prompt(prompt, max_len=96)
+        input_ids = tokenizer.encode_prompt(prompt, max_len=192)
         generated = list(input_ids)
         with torch.no_grad():
             for _ in range(int(max_tokens)):
-                inp = torch.tensor([generated[-96:]], dtype=torch.long, device=device)
+                inp = torch.tensor([generated[-192:]], dtype=torch.long, device=device)
                 logits = mdl(inp)
                 next_logits = logits[0, -1, :] / max(float(temperature), 0.01)
 
@@ -659,7 +674,7 @@ def chat_fn(prompt, max_tokens, temperature, top_p):
                 probs = torch.softmax(next_logits, dim=-1)
                 next_token = torch.multinomial(probs, 1).item()
                 generated.append(next_token)
-                if next_token == tokenizer.eos_id or len(generated) > 120:
+                if next_token == tokenizer.eos_id or len(generated) > 240:
                     break
 
         response = tokenizer.decode(generated[len(input_ids):])
@@ -671,12 +686,12 @@ def chat_fn(prompt, max_tokens, temperature, top_p):
 
 # ── Gradio UI ─────────────────────────────────────────────────────
 
-with gr.Blocks(title="Fusion-LLM Demo v2", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="Fusion-LLM Demo v3", theme=gr.themes.Soft()) as demo:
     gr.Markdown("""
-    # Fusion-LLM Demo v2
+    # Fusion-LLM Demo v3
     **Train & Chat** with a custom Transformer featuring **SBLA Attention** + **Thinking Dial**
     
-    Upgraded: ~12M params | BPE tokenizer | 200+ training pairs | up to 100 epochs
+    Upgraded: ~12M params | BPE vocab=2000 | seq_len=256 | answer-only training | 200+ pairs
     """)
 
     with gr.Tabs():
@@ -721,15 +736,16 @@ with gr.Blocks(title="Fusion-LLM Demo v2", theme=gr.themes.Soft()) as demo:
             - Controls how much computation the model spends thinking before answering
             - Implemented via logits hook callback (architecture-level control)
 
-            ### Model Specs (Demo v2)
-            - **Parameters**: ~12M (upgraded from ~3M)
-            - **Vocabulary**: BPE subword (~500 tokens, upgraded from char-level ~97)
-            - **Layers**: 4 Transformer blocks (upgraded from 2)
-            - **Hidden Size**: 256 (upgraded from 128)
-            - **Attention Heads**: 8 (upgraded from 4)
+            ### Model Specs (Demo v3)
+            - **Parameters**: ~12M
+            - **Vocabulary**: BPE subword (~2000 tokens, upgraded from 500)
+            - **Layers**: 4 Transformer blocks
+            - **Hidden Size**: 256
+            - **Attention Heads**: 8
             - **FFN Dim**: 512
-            - **Max Seq Len**: 128 (upgraded from 64)
-            - **Training Data**: 200+ QA pairs (upgraded from 30)
+            - **Max Seq Len**: 256 (upgraded from 128)
+            - **Training Strategy**: Answer-only loss (only predicts after `<|a|>`)
+            - **Training Data**: 199 QA pairs
             - **Optimizer**: AdamW with cosine annealing + gradient clipping
 
             ---
