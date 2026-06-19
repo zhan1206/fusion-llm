@@ -212,89 +212,92 @@ def get_model():
 # ── Train Function ────────────────────────────────────────────────
 
 def train_fn(learning_rate, epochs, batch_size_val):
-    mdl = get_model()
-    mdl.train()
+    try:
+        mdl = get_model()
+        mdl.train()
 
-    # Encode all data
-    encoded_pairs = [(torch.tensor(tokenizer.encode(q + " " + a)),)
-                     for q, a in TRAIN_DATA]
+        encoded_pairs = [(torch.tensor(tokenizer.encode(q + " " + a)),)
+                         for q, a in TRAIN_DATA]
 
-    optimizer = torch.optim.Adam(mdl.parameters(), lr=learning_rate)
-    losses = []
+        optimizer = torch.optim.Adam(mdl.parameters(), lr=learning_rate)
+        losses = []
 
-    for epoch in range(int(epochs)):
-        total_loss = 0
-        count = 0
-        indices = np.random.permutation(len(encoded_pairs))
+        for epoch in range(int(epochs)):
+            total_loss = 0
+            count = 0
+            indices = np.random.permutation(len(encoded_pairs))
 
-        for i in range(0, len(indices), max(batch_size_val, 1)):
-            batch_idx = indices[i:i + max(batch_size_val, 1)]
-            batch_loss = 0
-            for j in batch_idx:
-                ids = encoded_pairs[j][0].to(device)
-                if len(ids) < 2:
-                    continue
-                inputs = ids[:-1].unsqueeze(0)
-                targets = ids[1:].unsqueeze(0)
-                logits = mdl(inputs)
-                loss = nn.CrossEntropyLoss()(logits.view(-1, tokenizer.vocab_size), targets.view(-1))
-                batch_loss += loss.item()
-                loss.backward()
-                total_loss += loss.item()
-                count += 1
-            optimizer.step()
-            optimizer.zero_grad()
+            for i in range(0, len(indices), max(batch_size_val, 1)):
+                batch_idx = indices[i:i + max(batch_size_val, 1)]
+                batch_loss = 0
+                for j in batch_idx:
+                    ids = encoded_pairs[j][0].to(device)
+                    if len(ids) < 2:
+                        continue
+                    inputs = ids[:-1].unsqueeze(0)
+                    targets = ids[1:].unsqueeze(0)
+                    logits = mdl(inputs)
+                    loss = nn.CrossEntropyLoss()(logits.view(-1, tokenizer.vocab_size), targets.view(-1))
+                    batch_loss += loss.item()
+                    loss.backward()
+                    total_loss += loss.item()
+                    count += 1
+                optimizer.step()
+                optimizer.zero_grad()
 
-        avg_loss = total_loss / max(count, 1)
-        losses.append(round(avg_loss, 4))
+            avg_loss = total_loss / max(count, 1)
+            losses.append(round(avg_loss, 4))
 
-    training_history["loss"] = losses
-    training_history["epoch"] = list(range(1, int(epochs) + 1))
+        training_history["loss"] = losses
+        training_history["epoch"] = list(range(1, int(epochs) + 1))
 
-    plot = None
-    if losses:
-        plot = "Epoch -> Loss\n" + "\n".join(f"{e} -> {l}" for e, l in zip(training_history["epoch"], losses))
-    else:
-        plot = "No data."
-
-    status = f"Done! Final Loss: {losses[-1]:.4f}" if losses else "No training performed."
-    return status, plot
+        if losses:
+            plot = "Epoch -> Loss\n" + "\n".join(f"{e} -> {l}" for e, l in zip(training_history["epoch"], losses))
+            status = f"Done! Final Loss: {losses[-1]:.4f}"
+        else:
+            plot = "No data."
+            status = "No training performed."
+        return status, plot
+    except Exception as e:
+        import traceback
+        return f"ERROR: {e}\n\n{traceback.format_exc()}", "(error)"
 
 
 # ── Chat Function ─────────────────────────────────────────────────
 
 def chat_fn(prompt, max_tokens, temperature, top_p):
-    mdl = get_model()
-    mdl.eval()
+    try:
+        mdl = get_model()
+        mdl.eval()
 
-    input_ids = tokenizer.encode(prompt, max_len=48)
-    input_tensor = torch.tensor([input_ids], dtype=torch.long, device=device)
+        input_ids = tokenizer.encode(prompt, max_len=48)
+        generated = list(input_ids)
+        with torch.no_grad():
+            for _ in range(int(max_tokens)):
+                inp = torch.tensor([generated[-48:]], dtype=torch.long, device=device)
+                logits = mdl(inp)
+                next_logits = logits[0, -1, :] / max(float(temperature), 0.01)
 
-    generated = list(input_ids)
-    with torch.no_grad():
-        for _ in range(int(max_tokens)):
-            inp = torch.tensor([generated[-48:]], dtype=torch.long, device=device)
-            logits = mdl(inp)
-            next_logits = logits[0, -1, :] / max(float(temperature), 0.01)
+                if top_p < 1.0:
+                    sorted_logits, sorted_idx = torch.sort(next_logits, descending=True)
+                    cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                    sorted_idx_to_remove = cumulative_probs > top_p
+                    sorted_idx_to_remove[1:] = sorted_idx_to_remove[:-1].clone()
+                    sorted_idx_to_remove[0] = False
+                    indices_to_remove = sorted_idx[sorted_idx_to_remove]
+                    next_logits[indices_to_remove] = float('-inf')
 
-            # Top-p filtering
-            if top_p < 1.0:
-                sorted_logits, sorted_idx = torch.sort(next_logits, descending=True)
-                cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-                sorted_idx_to_remove = cumulative_probs > top_p
-                sorted_idx_to_remove[1:] = sorted_idx_to_remove[:-1].clone()
-                sorted_idx_to_remove[0] = False
-                indices_to_remove = sorted_idx[sorted_idx_to_remove]
-                next_logits[indices_to_remove] = float('-inf')
+                probs = torch.softmax(next_logits, dim=-1)
+                next_token = torch.multinomial(probs, 1).item()
+                generated.append(next_token)
+                if next_token == tokenizer.eos_id or len(generated) > 80:
+                    break
 
-            probs = torch.softmax(next_logits, dim=-1)
-            next_token = torch.multinomial(probs, 1).item()
-            generated.append(next_token)
-            if next_token == tokenizer.eos_id or len(generated) > 80:
-                break
-
-    response = tokenizer.decode(generated[len(input_ids):])
-    return response or "(no output)"
+        response = tokenizer.decode(generated[len(input_ids):])
+        return response or "(no output)"
+    except Exception as e:
+        import traceback
+        return f"ERROR: {e}\n\n{traceback.format_exc()}"
 
 
 # ── Gradio UI ─────────────────────────────────────────────────────
