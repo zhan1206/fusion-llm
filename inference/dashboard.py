@@ -77,7 +77,8 @@ class InferenceEngine:
         self.model.eval()
         self.inference_config = InferenceConfig()
         self.kv_cache = None
-        self._init_tokenizer()
+        self._tokenizer = None
+        self._ensure_tokenizer()
         
     def _load_model(self, model_path: str) -> tuple:
         """Load model from path."""

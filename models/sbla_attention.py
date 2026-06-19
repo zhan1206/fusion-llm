@@ -264,29 +264,6 @@ class SBLAttention(nn.Module):
             real_block_sizes,
         )
     
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        output_attentions: bool = False,
-        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        use_cache: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        """Forward pass — DEPRECATED, use forward_with_qkv() instead.
-
-        This method is kept only for backward compatibility.
-        FusionAttention and FusionMiniLayer both call forward_with_qkv()
-        with pre-projected Q/K/V (after RoPE), which is the canonical path.
-
-        Raises:
-            RuntimeError: Always, since Q/K/V projections were removed (S-NEW-8).
-        """
-        raise RuntimeError(
-            "SBLAttention.forward() is deprecated. Q/K/V projections were removed "
-            "to avoid parameter waste (S-NEW-8). Use FusionAttention wrapper or "
-            "call sbla.forward_with_qkv(Q, K, V, ...) instead."
-        )
-
     def forward_with_qkv(
         self,
         Q: torch.Tensor,
@@ -295,6 +272,7 @@ class SBLAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        position_ids: Optional[torch.Tensor] = None,  # [N9 FIX] accepted for API completeness
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """Forward pass with pre-projected Q/K/V (e.g., after RoPE application).
 

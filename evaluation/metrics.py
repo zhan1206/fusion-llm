@@ -11,6 +11,7 @@
 
 import math
 import sys
+import warnings
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 
@@ -190,6 +191,10 @@ class ModelEvaluator:
     ) -> float:
         """
         计算 BLEU score（简化版）
+
+        .. deprecated::
+            请使用 evaluation/bleu_rouge_meteor.py:compute_bleu() 代替。
+            该实现缺少 BLEU-4 brevity penalty 和 n-gram clipping。
         
         参数：
             predictions: 预测文本列表
@@ -237,6 +242,10 @@ class ModelEvaluator:
     ) -> Dict[str, float]:
         """
         计算 ROUGE score（简化版）
+
+        .. deprecated::
+            请使用 evaluation/bleu_rouge_meteor.py:compute_rouge() 代替。
+            该实现缺少标准 ROUGE-L 的 LCS 精确计算。
         
         参数：
             predictions: 预测文本列表

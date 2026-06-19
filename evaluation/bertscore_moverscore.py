@@ -1,7 +1,11 @@
 """
 BERTScore 和 MoverScore 评估指标
-注意：这些是简化版实现，用于演示目的
-实际使用时应该安装官方包：
+
+【重要说明】这些是简化版实现（演示用）：
+- BERTScore: 使用 hash 伪嵌入（确定性但非真正语义嵌入）
+- MoverScore: 使用 hash 伪嵌入（确定性，模拟词嵌入距离）
+
+生产环境请使用官方包：
 - BERTScore: pip install bert-score
 - MoverScore: pip install moverscore
 """
@@ -15,9 +19,14 @@ sys.path.insert(0, '.')
 
 def bertscore_simple(candidate, reference, model_name="bert-base-uncased"):
     """
-    Simplified BERTScore using cosine similarity on token ID embeddings.
+    Simplified BERTScore using deterministic hash embeddings.
     
-    For production use, install the official package:
+    【警告】此版本使用 hash 伪嵌入，非真正语义嵌入：
+    - 结果是确定性的（相同输入总是相同输出）
+    - 但不捕获真正语义相似性
+    - 仅用于快速测试和流程验证
+    
+    生产环境请安装官方包：
         pip install bert-score
         from bert_score import score
         P, R, F1 = score(candidates, references, lang="en")
@@ -72,7 +81,7 @@ def bertscore_simple(candidate, reference, model_name="bert-base-uncased"):
 
 def moverscore_simple(candidate, reference):
     """
-    简化版 MoverScore（演示用）
+    简化版 MoverScore（演示用，确定性版本）
     
     实际使用时请安装官方包：pip install moverscore
     然后使用：
@@ -86,22 +95,43 @@ def moverscore_simple(candidate, reference):
     Returns:
         float: MoverScore
     """
-    # 简化版：使用 token 嵌入的 Earth Mover's Distance
-    # 实际 MoverScore 使用 BERT 嵌入的 WMD
+    # [FIX] 使用与 BERTScore 相同的 hash 嵌入，确保结果可复现
+    # 之前用 torch.randn 导致每次调用结果不同
     
-    # 转换为嵌入（简化版：随机嵌入）
-    # 实际使用时应该使用 BERT 嵌入
-    cand_embeddings = torch.randn(len(candidate), 768)  # (seq_len, hidden_size)
-    ref_embeddings = torch.randn(len(reference), 768)
+    if len(candidate) == 0 or len(reference) == 0:
+        return 0.0
     
-    # 计算成本矩阵
+    embed_dim = 128  # MoverScore 用较小维度即可
+    
+    def _hash_embed(token_ids):
+        """确定性伪嵌入，与 bertscore_simple 保持一致"""
+        emb = torch.zeros(len(token_ids), embed_dim)
+        for i, tid in enumerate(token_ids):
+            for j in range(embed_dim):
+                # 使用不同的 hash 种子（2654435761 是黄金比例常数的整数部分）
+                emb[i, j] = ((tid * (j + 1) * 2654435761) % (2**31)) / (2**31) * 2 - 1
+        return emb
+    
+    cand_embeddings = _hash_embed(candidate)  # (len_c, dim)
+    ref_embeddings = _hash_embed(reference)    # (len_r, dim)
+    
+    # 计算成本矩阵（Euclidean 距离）
     cost_matrix = torch.cdist(cand_embeddings.unsqueeze(0), ref_embeddings.unsqueeze(0)).squeeze(0)
     
-    # 简化版：使用最小成本作为分数
-    min_cost = cost_matrix.min().item()
+    # 简化版：使用平均最小成本作为分数（双向）
+    # Precision: 对每个候选 token 找最近的参考 token
+    precision_cost = cost_matrix.min(dim=1).values.mean().item()
+    # Recall: 对每个参考 token 找最近的候选 token
+    recall_cost = cost_matrix.min(dim=0).values.mean().item()
     
     # 归一化到 0-1（越低越好 → 越高越好）
-    score = 1.0 / (1.0 + min_cost)
+    precision_score = 1.0 / (1.0 + precision_cost)
+    recall_score = 1.0 / (1.0 + recall_cost)
+    
+    # F1 综合
+    if precision_score + recall_score == 0:
+        return 0.0
+    score = 2 * precision_score * recall_score / (precision_score + recall_score)
     
     return score
 

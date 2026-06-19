@@ -1,0 +1,61 @@
+# Fusion-LLM Configuration Registry
+# Model version management: download links, hashes, metadata
+#
+# STATUS: Architecture code is complete. Pretrained weights require
+# GPU training on real data (see scripts/download_data.py).
+# fusion-mini has trained weights for pipeline verification.
+
+models:
+  fusion-mini:
+    description: "FusionMini (4.5M params) - synthetic arithmetic training"
+    size: "4.5M"
+    training_tokens: "~100K synthetic"
+    accuracy:
+      addition_1to10: "~65% (200 epochs, 80 samples)"
+      addition_1to20: "~35% (300 epochs, 200 samples)"
+    url: "https://github.com/zhan1206/fusion-llm/releases"
+    weights_dir: "output/mini_model"
+    sha256: ""
+    released_at: "2026-05-30"
+    license: "Apache 2.0"
+    notes: "Trained on synthetic arithmetic data. For pipeline verification only."
+
+  fusion-0.5b:
+    description: "500M parameter model - SBLA + Thinking Dial"
+    size: "500M"
+    url: ""
+    sha256: ""
+    released_at: "TBD"
+    license: "Apache 2.0"
+    training_tokens: "TBD"
+    notes: "Architecture ready. Requires GPU (8GB+) and training data. See scripts/download_data.py."
+
+  fusion-1.5b:
+    description: "1.5B parameter model - production scale"
+    size: "1.5B"
+    url: ""
+    sha256: ""
+    released_at: "TBD"
+    license: "Apache 2.0"
+    training_tokens: "TBD"
+    notes: "Architecture ready. Requires multi-GPU for training."
+
+  fusion-8b:
+    description: "8B parameter model"
+    size: "8B"
+    url: ""
+    sha256: ""
+    released_at: "TBD"
+    license: "Apache 2.0"
+    training_tokens: "TBD"
+    notes: "Architecture ready. Requires 24GB+ GPU for full finetune."
+
+  fusion-14b:
+    description: "14B parameter model"
+    size: "14B"
+    url: ""
+    sha256: ""
+    released_at: "TBD"
+    license: "Apache 2.0"
+    training_tokens: "TBD"
+    notes: "Architecture ready. Requires multi-GPU cluster for training."

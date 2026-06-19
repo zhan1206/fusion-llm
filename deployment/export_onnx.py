@@ -1,196 +1,150 @@
 """
-ONNX 部署选项 - 将模型导出为 ONNX 格式（用于跨平台推理）
+ONNX 部署 — 将 FusionModel 导出为 ONNX 格式
+
+使用方式:
+    python deployment/export_onnx.py --checkpoint output/mini_model --output output/onnx/model.onnx
+    python deployment/export_onnx.py --checkpoint output/mini_model --output output/onnx/ --dynamic-batch
+
+依赖: onnx, onnxruntime (pip install onnx onnxruntime)
 """
 import sys
-import torch
+import os
+import argparse
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, '.')
 
 
-def export_to_onnx(model, tokenizer, output_path, dummy_input=None):
-    """
-    将模型导出为 ONNX 格式（简化版）
-    
-    注意：这是简化版实现，用于演示目的
-    实际使用时应该使用 PyTorch 官方 ONNX 导出：
-    - torch.onnx.export(model, dummy_input, output_path, ...)
-    - 然后使用 ONNX Runtime 进行推理
-    
+class _OnnxWrapper(torch.nn.Module):
+    """将 CausalLMOutputWithPast 包装为裸 logits tensor 输出，供 ONNX 导出用"""
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
+        return outputs.logits
+
+
+def export_to_onnx(model, output_path, dynamic_batch=False, dynamic_seq=True, opset=14):
+    """Export FusionModel to ONNX format.
+
     Args:
-        model: PyTorch 模型
-        tokenizer: 分词器
-        output_path: 输出路径（.onnx 文件）
-        dummy_input: 虚拟输入（用于导出）
+        model: FusionModel instance
+        output_path: Output .onnx file path
+        dynamic_batch: Enable dynamic batch dimension
+        dynamic_seq: Enable dynamic sequence length
+        opset: ONNX opset version
     """
-    # TODO: This is a simplified/stub export. For production use,
-    # use torch.onnx.export() directly with proper opset version.
-    print("[EXPORT] 导出模型到 ONNX 格式（简化版 - 仅保存配置和元数据）...")
-    
-    # 创建虚拟输入（如果没有提供）
-    if dummy_input is None:
-        if tokenizer is not None:
-            # 设置 pad_token（如果没有）
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            
-            # 使用分词器创建虚拟输入
-            dummy_text = "This is a test."
-            dummy_input = tokenizer(
-                dummy_text,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=32,
-            )
-        else:
-            # 创建随机虚拟输入
-            batch_size = 1
-            seq_len = 32
-            vocab_size = model.config.vocab_size if hasattr(model.config, 'vocab_size') else 100
-            
-            dummy_input = {
-                "input_ids": torch.randint(0, vocab_size, (batch_size, seq_len)),
-                "attention_mask": torch.ones(batch_size, seq_len),
-            }
-    
-    # 将模型设置为评估模式
+    try:
+        import onnx
+        import onnxruntime as ort
+    except ImportError:
+        print("[ERROR] onnx and onnxruntime required. Install with:")
+        print("  pip install onnx onnxruntime")
+        return False
+
+    import torch
+
     model.eval()
-    
-    # 导出到 ONNX（简化版）
-    # 实际 ONNX 导出应该使用 torch.onnx.export()
-    # 这里只创建一个示例文件
-    
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # 创建 ONNX 格式（简化版：只保存模型结构信息）
-    onnx_data = {
-        "format": "onnx",
-        "version": "1.0",
-        "model": {
-            "type": type(model).__name__,
-            "config": dict(model.config.__dict__) if hasattr(model.config, '__dict__') else {},
-        },
-        "dummy_input": {
-            "input_ids": dummy_input["input_ids"].tolist() if isinstance(dummy_input, dict) else None,
-            "attention_mask": dummy_input["attention_mask"].tolist() if isinstance(dummy_input, dict) else None,
-        },
-        "note": "This is a simplified version. Use torch.onnx.export() for actual ONNX export.",
+
+    # 用包装器将 CausalLMOutputWithPast 转为裸 tensor
+    wrapper = _OnnxWrapper(model)
+    wrapper.eval()
+
+    # 创建 dummy input（类型必须正确）
+    batch_size = 1
+    seq_len = 16
+    dummy_input_ids = torch.randint(0, model.config.vocab_size, (batch_size, seq_len))
+    dummy_attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long)
+
+    # Dynamic axes — 始终构建完整的 dynamic_axes dict
+    dynamic_axes = {}
+    if dynamic_batch or dynamic_seq:
+        input_axes = {}
+        if dynamic_batch:
+            input_axes[0] = "batch_size"
+        if dynamic_seq:
+            input_axes[1] = "seq_len"
+        # 输入和输出使用相同的动态维度声明
+        dynamic_axes = {
+            "input_ids": input_axes.copy() if input_axes else {},
+            "attention_mask": input_axes.copy() if input_axes else {},
+            "logits": input_axes.copy() if input_axes else {},
+        }
+
+    # Export
+    print(f"[EXPORT] Exporting to ONNX (opset={opset}, dynamic_batch={dynamic_batch}, dynamic_seq={dynamic_seq})...")
+    torch.onnx.export(
+        wrapper,
+        (dummy_input_ids, dummy_attention_mask),
+        str(output_path),
+        input_names=["input_ids", "attention_mask"],
+        output_names=["logits"],
+        dynamic_axes=dynamic_axes if dynamic_axes else None,
+        opset_version=opset,
+        do_constant_folding=True,
+    )
+
+    # Verify with onnx.checker
+    print("[VERIFY] Checking ONNX model...")
+    onnx_model = onnx.load(str(output_path))
+    onnx.checker.check_model(onnx_model)
+    print("[VERIFY] ONNX checker passed.")
+
+    # Test with ONNX Runtime
+    print("[VERIFY] Running ONNX Runtime inference test...")
+    session = ort.InferenceSession(str(output_path))
+    ort_inputs = {
+        "input_ids": dummy_input_ids.numpy(),
+        "attention_mask": dummy_attention_mask.numpy(),
     }
-    
-    # 保存为 JSON（简化版）
-    # 实际 ONNX 格式是 protobuf 格式
+    ort_outputs = session.run(None, ort_inputs)
+
+    # Compare with PyTorch output（用同一个 wrapper 保证输出格式一致）
+    with torch.no_grad():
+        pt_logits = wrapper(dummy_input_ids, dummy_attention_mask)
+
+    import numpy as np
+    max_diff = np.max(np.abs(ort_outputs[0] - pt_logits.numpy()))
+    print(f"[VERIFY] Max diff between PyTorch and ONNX Runtime: {max_diff:.6e}")
+
+    if max_diff < 1e-4:
+        print(f"[PASS] ONNX export verified: {output_path}")
+    else:
+        print(f"[WARN] Diff {max_diff:.6e} exceeds 1e-4, check model compatibility")
+
+    # Save model metadata
+    metadata = {
+        "model_type": "fusion",
+        "vocab_size": model.config.vocab_size,
+        "hidden_size": model.config.hidden_size,
+        "num_hidden_layers": model.config.num_hidden_layers,
+        "num_attention_heads": model.config.num_attention_heads,
+        "dynamic_batch": dynamic_batch,
+        "dynamic_seq": dynamic_seq,
+        "onnx_opset": opset,
+    }
     import json
-    with open(output_path.with_suffix('.json'), "w", encoding="utf-8") as f:
-        json.dump(onnx_data, f, indent=2, ensure_ascii=False, default=str)
-    
-    print(f"   模型已导出到: {output_path.with_suffix('.json')}")
-    print("   [注意] 这是简化版实现，实际使用时请使用 torch.onnx.export()")
-    print()
-    
-    # 创建使用说明
-    readme_path = output_path.parent / "README_ONNX.md"
-    with open(readme_path, "w", encoding="utf-8") as f:
-        f.write("# ONNX 部署指南\n\n")
-        f.write("## 1. 安装依赖\n\n")
-        f.write("```bash\n")
-        f.write("pip install torch onnx onnxruntime\n")
-        f.write("```\n\n")
-        
-        f.write("## 2. 导出到 ONNX\n\n")
-        f.write("```python\n")
-        f.write("import torch\n")
-        f.write("from models.fusion_mini import FusionMini, FusionMiniConfig\n\n")
-        
-        f.write("# 加载模型\n")
-        f.write("config = FusionMiniConfig(vocab_size=100, hidden_size=32, num_hidden_layers=1)\n")
-        f.write("model = FusionMini(config)\n")
-        f.write("model.eval()\n\n")
-        
-        f.write("# 创建虚拟输入\n")
-        f.write("dummy_input = torch.randint(0, 100, (1, 32))\n\n")
-        
-        f.write("# 导出到 ONNX\n")
-        f.write("torch.onnx.export(\n")
-        f.write("    model,\n")
-        f.write("    dummy_input,\n")
-        f.write("    'output/model.onnx',\n")
-        f.write("    input_names=['input_ids'],\n")
-        f.write("    output_names=['logits'],\n")
-        f.write("    dynamic_axes={'input_ids': {0: 'batch_size', 1: 'sequence'}, 'logits': {0: 'batch_size', 1: 'sequence'}},\n")
-        f.write("    opset_version=17,\n")
-        f.write(")\n")
-        f.write("```\n\n")
-        
-        f.write("## 3. 使用 ONNX Runtime 推理\n\n")
-        f.write("```python\n")
-        f.write("import onnxruntime as ort\n")
-        f.write("import numpy as np\n\n")
-        
-        f.write("# 加载 ONNX 模型\n")
-        f.write("session = ort.InferenceSession('output/model.onnx')\n\n")
-        
-        f.write("# 准备输入\n")
-        f.write("input_ids = np.random.randint(0, 100, (1, 32)).astype(np.int64)\n\n")
-        
-        f.write("# 运行推理\n")
-        f.write("logits = session.run(None, {'input_ids': input_ids})[0]\n")
-        f.write("print('Logits shape:', logits.shape)\n")
-        f.write("```\n")
-    
-    print(f"   ONNX 部署指南已保存到: {readme_path}")
-    print()
+    meta_path = output_path.with_suffix(".meta.json")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+    print(f"[DONE] ONNX export complete: {output_path}")
+    return True
 
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("Fusion-LLM ONNX 部署选项")
-    print("=" * 60)
-    print()
-    
-    # 创建示例模型
-    print("[1] 创建示例模型...")
-    from models.fusion_mini import FusionMini, FusionMiniConfig
-    
-    config = FusionMiniConfig(
-        vocab_size=100,
-        hidden_size=32,
-        num_hidden_layers=1,
-    )
-    model = FusionMini(config)
-    print("   示例模型已创建")
-    print()
-    
-    # 创建示例分词器
-    print("[2] 创建示例分词器...")
-    from transformers import AutoTokenizer
-    
-    # 使用真实分词器（如果可用）
-    try:
-        tokenizer = AutoTokenizer.from_pretrained("gpt2")
-        print("   使用 GPT-2 分词器")
-    except:
-        # 创建模拟分词器
-        class MockTokenizer:
-            def __init__(self, vocab_size=100):
-                self.vocab_size = vocab_size
-            
-            def __call__(self, text, **kwargs):
-                return {"input_ids": [[1, 2, 3]]}
-            
-            def decode(self, ids, **kwargs):
-                return "Generated text"
-        
-        tokenizer = MockTokenizer()
-        print("   使用模拟分词器")
-    print()
-    
-    # 导出到 ONNX
-    print("[3] 导出到 ONNX 格式...")
-    output_path = Path("output/onnx/model.onnx")
-    export_to_onnx(model, tokenizer, output_path)
-    print()
-    
-    print("[PASS] ONNX 部署选项测试通过")
-    sys.exit(0)
+    parser = argparse.ArgumentParser(description="Export FusionModel to ONNX format")
+    parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint")
+    parser.add_argument("--output", default="output/onnx/model.onnx", help="Output ONNX path")
+    parser.add_argument("--dynamic-batch", action="store_true", help="Enable dynamic batch dim")
+    parser.add_argument("--opset", type=int, default=14, help="ONNX opset version")
+    args = parser.parse_args()
+
+    from models.fusion_model import FusionModel
+    model = FusionModel.from_pretrained(args.checkpoint)
+    export_to_onnx(model, args.output, args.dynamic_batch, opset=args.opset)

@@ -64,6 +64,24 @@ THINK_CLOSE = "|>"  # Closing bracket for think_depth token
 THINK_END = "<|think_end|>"  # End-of-thinking-block marker
 THINK_DEPTH_PATTERN = re.compile(r"<\|think_depth_(\d+)\|")  # N14 FIX: \d+ for future depth>=10
 
+# ============================================================
+# Thinking Dial Token Utilities
+#
+# DEPRECATION NOTICE (v2.1.2):
+# Text-injection approach (build_think_token + apply_thinking_control) is
+# DEPRECATED. Thinking Dial now operates exclusively at the architecture level
+# via ThinkingDialModel (thinking_embedding + thinking_gate → logits_hook).
+#
+# The token strings (<|think_depth_N|>, <|think_end|>) are still registered
+# in the tokenizer vocab for future use in training data annotation, but the
+# model does NOT parse them from text during forward/generate.
+#
+# Migration:
+#   Old: apply_thinking_control(text, depth=2) → "<|think_depth_2|>\ntext\n<|think_end|>"
+#   New: ThinkingDialModel.forward(input_ids, thinking_depth=2) or
+#        ThinkingDialModel.generate(input_ids, thinking_depth=2)
+# ============================================================
+
 # Depth 0-3 的描述
 THINK_DEPTH_DESCRIPTIONS = {
     0: "直接回答模式 - 快速响应，适用于闲聊、翻译、简单问答",
@@ -171,7 +189,11 @@ class ThinkingDialProcessor:
     """
     Thinking Dial 数据处理器
     
-    负责在数据预处理阶段注入 thinking token
+    负责在数据预处理阶段标注 thinking depth。
+    与 ThinkingDialModel 配合使用：Processor 标注数据，Model 在训练/推理时
+    通过 thinking_embedding + thinking_gate 进行架构级的深度控制。
+    
+    不再进行文本拼接（旧版行为），而是返回 think_rank 元数据供训练循环使用。
     """
     
     def __init__(
@@ -186,10 +208,8 @@ class ThinkingDialProcessor:
         self._register_special_tokens()
     
     def _register_special_tokens(self):
-        """注册特殊 token 到 tokenizer"""
-        # M1-M3 FIX: Register complete think tokens matching tokenizer.py format
-        # tokenizer.py registers ["<|think_depth_0|>", "<|think_depth_1|>", "<|think_depth_2|>", "<|think_depth_3|>"]
-        think_tokens = [build_think_token(d) for d in range(4)]  # ["<|think_depth_0|>", ..., "<|think_depth_3|>"]
+        """Register special tokens to tokenizer"""
+        think_tokens = [build_think_token(d) for d in range(4)]
         
         special_tokens = {
             "additional_special_tokens": think_tokens,
@@ -198,9 +218,9 @@ class ThinkingDialProcessor:
         num_added = self.tokenizer.add_special_tokens(special_tokens)
         
         if num_added > 0:
-            self.tokenizer.resize_embeddings(
-                self.tokenizer.vocab_size + num_added
-            )
+            # resize_token_embeddings is a model method, not tokenizer.
+            # Callers who need to resize model embeddings should do so separately.
+            pass
     
     def process_single(
         self,
@@ -217,31 +237,18 @@ class ThinkingDialProcessor:
             think_rank: 推理深度（0-3）
             
         返回：
-            包含处理后文本的字典
+            包含处理后文本和 think_rank 元数据的字典
         """
-        if not self.enable_thinking_dial:
-            return {
-                "text": f"{prompt}\n{response}",
-                "think_rank": 0,
-            }
-        
-        # 构建 thinking token
-        think_token = build_think_token(think_rank)
-        
-        # 根据深度决定是否需要 thinking token
-        if think_rank == 0:
-            # depth=0：直接回答，不需要 thinking token
-            full_text = f"{prompt}\n{response}"
-        else:
-            # depth>0：添加 thinking token
-            full_text = f"{think_token}\n{prompt}\n{response}\n{THINK_END}"
+        # Architecture-level integration: return think_rank metadata
+        # instead of text injection. ThinkingDialModel uses thinking_embedding
+        # and thinking_gate for depth control at the logits level.
+        full_text = f"{prompt}\n{response}"
         
         return {
             "text": full_text,
             "prompt": prompt,
             "response": response,
             "think_rank": think_rank,
-            "think_token": think_token if think_rank > 0 else None,
         }
     
     def process_dataset(
@@ -331,8 +338,17 @@ class GRPOTrainer:
     参考：DeepSeekMath GRPO
     """
     
-    # S1 FIX: Built-in reward function registry
+    # S1 FIX: Built-in reward function registry with pre-registered functions
     REWARD_FUNCTIONS = {}
+    
+    @classmethod
+    def _register_builtin_rewards(cls):
+        """Register built-in reward functions."""
+        try:
+            from evaluation.gsm8k_reward import gsm8k_reward_fn
+            cls.REWARD_FUNCTIONS['gsm8k'] = gsm8k_reward_fn
+        except ImportError:
+            pass
     
     @classmethod
     def register_reward_fn(cls, name: str, fn: callable):
@@ -851,7 +867,7 @@ class ThinkingDialModel(nn.Module):
         
         # Thinking embedding（学习推理深度表示）
         self.thinking_embedding = nn.Embedding(
-            thinking_config.num_thinking_depths,
+            self.thinking_config.num_thinking_depths,
             base_model.config.hidden_size,
         )
         
@@ -970,6 +986,9 @@ class ThinkingDialModel(nn.Module):
         return self.base_model.generate(input_ids=input_ids, **kwargs)
 
 
+# Register built-in reward functions on import
+GRPOTrainer._register_builtin_rewards()
+
 # ============================================================
 # 工具函数
 # ============================================================
@@ -979,15 +998,27 @@ def apply_thinking_control(
     depth: int,
 ) -> str:
     """
-    在文本中注入 thinking token
+    [DEPRECATED] 在文本中注入 thinking token
+    
+    此函数保留向后兼容，但文本注入方式已弃用。
+    推理深度控制现在通过 ThinkingDialModel 的架构级机制实现：
+    - thinking_embedding + thinking_gate → logits_hook
+    - 使用 ThinkingDialModel.generate(input_ids, thinking_depth=N)
     
     参数：
         text: 原始文本
         depth: 推理深度（0-3）
         
     返回：
-        带 thinking token 的文本
+        带 thinking token 的文本（向后兼容）
     """
+    import warnings
+    warnings.warn(
+        "apply_thinking_control() is deprecated. "
+        "Use ThinkingDialModel.forward/generate with thinking_depth parameter instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     think_token = build_think_token(depth)
     
     if depth == 0:

@@ -242,8 +242,8 @@ class BilingualTrueFilter:
         if re.match(r'^[\s\d\.\-\•]+$', text):
             return True
         
-        # 过短的有效内容
-        if len(re.findall(r'[\u4e00-\u9fff]', text)) < 50:
+        # 过短的有效内容（少于10个汉字视为低质量）
+        if len(re.findall(r'[\u4e00-\u9fff]', text)) < 10:
             return True
         
         return False
@@ -254,23 +254,64 @@ class BilingualTrueFilter:
         
         特征：
         - 语序不符合英文习惯
-        - 中式英语表达
+        - 中式英语表达 (Chinglish patterns)
+        - 不自然的冠词使用
         """
-        # 简化检测：检查是否符合英文基本语法
-        # 实际实现需要更复杂的 NLP 工具
+        # Chinglish patterns
+        chinglish_patterns = [
+            r"\bvery very\b",           # 双重 very
+            r"\byou can you up\b",      # Chinglish 成语
+            r"\bgood good study\b",     # Chinglish 成语
+            r"\bno no no\b",            # 三重 no
+            r"\bplay with me\b",        # 直译
+            r"\bI am come from\b",      # 语法错误
+            r"\bopen the light\b",      # 中式英语
+            r"\bgive you color see\b",  # 直译
+        ]
+        
+        for pattern in chinglish_patterns:
+            if re.search(pattern, text, re.I):
+                return True
+        
+        # Check for unnatural article patterns (simplified)
+        # Missing articles before countable nouns is a sign of Chinese-to-English translation
+        words = text.split()
+        if len(words) > 20:
+            # Check for sentences starting with lowercase (common in bad translations)
+            sentences = re.split(r'[.!?]', text)
+            lowercase_start = sum(1 for s in sentences if s.strip() and s.strip()[0].islower())
+            if lowercase_start / max(len(sentences), 1) > 0.3:
+                return True
+        
         return False
     
     def _is_low_quality_english(self, text: str) -> bool:
         """
         检测低质量英文内容
         """
-        # 纯列表
+        # Pure list/navigation text
         if re.match(r'^[\s\d\.\-\•]+$', text):
             return True
         
-        # 过短
-        if len(text.split()) < 20:
+        # Too short (less than 5 words is likely not useful)
+        if len(text.split()) < 5:
             return True
+        
+        # Excessive repetition
+        words = text.lower().split()
+        if len(words) > 20:
+            unique_ratio = len(set(words)) / len(words)
+            if unique_ratio < 0.3:
+                return True
+        
+        # Spam-like patterns
+        spam_patterns = [
+            r'\b(free|win|winner|click here|subscribe)\b.*\b(free|win|winner|click here|subscribe)\b',
+            r'(.)\1{5,}',  # Repeated characters
+        ]
+        for pattern in spam_patterns:
+            if re.search(pattern, text, re.I):
+                return True
         
         return False
 

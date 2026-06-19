@@ -32,6 +32,10 @@ from transformers import (
     AutoModelForCausalLM,
     get_linear_schedule_with_warmup,
 )
+
+# Fusion-LLM native model support
+from models.fusion_model import FusionModel, FusionConfig
+from models.fusion_mini import FusionMini, FusionMiniConfig
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -153,12 +157,23 @@ class DistillationTrainer:
             trust_remote_code=True,
         )
         
-        self.student_model = AutoModelForCausalLM.from_pretrained(
-            student_model_name,
-            torch_dtype=torch.bfloat16,
-            device_map=device,
-            trust_remote_code=True,
-        )
+        # Try FusionModel/FusionMini first, fall back to AutoModelForCausalLM
+        self.student_model = None
+        try:
+            self.student_model = FusionMini._load_from_safetensors(student_model_name)
+            logger.info("[OK] 学生模型加载为 FusionMini")
+        except Exception:
+            try:
+                self.student_model = FusionModel.from_pretrained(student_model_name)
+                logger.info("[OK] 学生模型加载为 FusionModel")
+            except Exception:
+                self.student_model = AutoModelForCausalLM.from_pretrained(
+                    student_model_name,
+                    torch_dtype=torch.bfloat16,
+                    device_map=device,
+                    trust_remote_code=True,
+                )
+                logger.info("[OK] 学生模型加载为 AutoModelForCausalLM（回退）")
         
         self.student_model.train()
         
@@ -362,7 +377,11 @@ class DistillationTrainer:
             checkpoint_dir = Path(output_dir) / f"checkpoint-epoch-{epoch+1}"
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             
-            self.student_model.save_pretrained(checkpoint_dir)
+            # Save checkpoint (FusionModel/FusionMini or HF model)
+            if hasattr(self.student_model, 'save_pretrained'):
+                self.student_model.save_pretrained(checkpoint_dir)
+            else:
+                torch.save(self.student_model.state_dict(), checkpoint_dir / "model.pt")
             self.student_tokenizer.save_pretrained(checkpoint_dir)
             
             logger.info(f"   [OK] 检查点保存至：{checkpoint_dir}")
@@ -371,7 +390,10 @@ class DistillationTrainer:
         output_path = Path(output_dir) / "final"
         output_path.mkdir(parents=True, exist_ok=True)
         
-        self.student_model.save_pretrained(output_path)
+        if hasattr(self.student_model, 'save_pretrained'):
+            self.student_model.save_pretrained(output_path)
+        else:
+            torch.save(self.student_model.state_dict(), output_path / "model.pt")
         self.student_tokenizer.save_pretrained(output_path)
         
         logger.info(f"[DONE] 蒸馏训练完成！模型保存至：{output_path}")

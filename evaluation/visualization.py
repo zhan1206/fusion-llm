@@ -162,30 +162,31 @@ def save_visualization_report(model, attention_weights, losses, output_path):
         import sys
         original_stdout = sys.stdout
         sys.stdout = f
+        try:
+            print("=" * 60)
+            print("Fusion-LLM 可视化报告")
+            print("=" * 60)
+            print()
         
-        print("=" * 60)
-        print("Fusion-LLM 可视化报告")
-        print("=" * 60)
-        print()
+            # 模型架构
+            visualize_model_architecture_text(model)
         
-        # 模型架构
-        visualize_model_architecture_text(model)
+            # 注意力可视化（如果有）
+            if attention_weights is not None:
+                visualize_attention_text(attention_weights, head_idx=0)
         
-        # 注意力可视化（如果有）
-        if attention_weights is not None:
-            visualize_attention_text(attention_weights, head_idx=0)
+            # 损失曲线（如果有）
+            if losses is not None and len(losses) > 1:
+                visualize_loss_curve_text(losses, window=10)
         
-        # 损失曲线（如果有）
-        if losses is not None and len(losses) > 1:
-            visualize_loss_curve_text(losses, window=10)
+            print()
+            print("=" * 60)
+            print("报告结束")
+            print("=" * 60)
         
-        print()
-        print("=" * 60)
-        print("报告结束")
-        print("=" * 60)
-        
-        # 恢复 stdout
-        sys.stdout = original_stdout
+        finally:
+            # 恢复 stdout
+            sys.stdout = original_stdout
     
     print(f"   报告已保存到: {output_path}")
     print()

@@ -231,6 +231,11 @@ class FusionAttention(nn.Module):
         # We assign it after sbla is created (above). This shares the parameter.
         self.o_proj = self.sbla.out_proj
     
+    # Tell HF that o_proj.weight is an alias of sbla.out_proj.weight.
+    # This allows save_pretrained to deduplicate, and from_pretrained to
+    # know that o_proj.weight should be reconstructed from sbla.out_proj.weight.
+    _tied_weights_keys = {"o_proj.weight": "sbla.out_proj.weight"}
+    
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -334,7 +339,10 @@ class FusionModel(PreTrainedModel, GenerationMixin):
     
     config_class = FusionConfig
     supports_gradient_checkpointing = True
-    _no_split_modules = ["FusionAttention"]
+    _no_split_modules = ["FusionAttention", "SBLAttention"]
+    # o_proj is a reference to sbla.out_proj (same parameter) for LoRA compatibility.
+    # FusionAttention._tied_weights_keys declares the alias so save_pretrained
+    # can deduplicate. tie_weights() re-links after loading.
     
     def __init__(self, config: FusionConfig):
         super().__init__(config)
@@ -361,6 +369,79 @@ class FusionModel(PreTrainedModel, GenerationMixin):
             self.lm_head.weight = self.embeddings.weight
         
         self.post_init()
+    
+    def _init_weights(self, module):
+        """Initialize weights — called by HF's post_init/init_weights.
+        
+        For from_pretrained, HF loads state_dict first then calls init_weights
+        which would overwrite the loaded weights. We guard against this by
+        checking if we're in the from_pretrained flow (model has _is_hf_initialized
+        flag set after loading).
+        """
+        # Skip re-initialization if weights were already loaded from checkpoint
+        if hasattr(self, '_is_hf_initialized') and self._is_hf_initialized:
+            return
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, RMSNorm):
+            nn.init.ones_(module.weight)
+    
+    def tie_weights(self, **kwargs):
+        """Re-link o_proj aliases after loading weights.
+        
+        FusionAttention.o_proj is an alias for FusionAttention.sbla.out_proj.
+        After from_pretrained loads the state_dict, o_proj gets its own copy.
+        We must re-alias it to share the parameter with sbla.out_proj.
+        """
+        super().tie_weights(**kwargs)
+        for layer in self.layers:
+            if hasattr(layer, 'attention') and hasattr(layer.attention, 'o_proj'):
+                layer.attention.o_proj = layer.attention.sbla.out_proj
+    
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        """Load a pretrained FusionModel, ensuring correct weight loading.
+        
+        Overrides the default to use load_state_dict directly, which correctly
+        handles our tied o_proj/sbla.out_proj parameters. The default HF 5.x
+        loading path (convert_and_load_state_dict_in_model) does not properly
+        restore weights for custom module hierarchies.
+        """
+        from safetensors.torch import load_file as sf_load
+        import os
+        
+        # Load config
+        from transformers import AutoConfig
+        config = kwargs.pop('config', None) or AutoConfig.from_pretrained(pretrained_model_name_or_path)
+        
+        # Create model with random weights
+        model = cls(config)
+        
+        # Load state dict from safetensors
+        sf_path = os.path.join(pretrained_model_name_or_path, 'model.safetensors')
+        if os.path.exists(sf_path):
+            sd = sf_load(sf_path)
+        else:
+            # Try PyTorch format
+            pt_path = os.path.join(pretrained_model_name_or_path, 'pytorch_model.bin')
+            sd = torch.load(pt_path, map_location='cpu', weights_only=True)
+        
+        # Add o_proj from sbla.out_proj (removed during save as tied weight)
+        for key in list(sd.keys()):
+            if 'sbla.out_proj.weight' in key:
+                oproj_key = key.replace('sbla.out_proj', 'o_proj')
+                sd[oproj_key] = sd[key].clone()
+        
+        model.load_state_dict(sd, strict=False)
+        model.tie_weights()  # Re-link o_proj -> sbla.out_proj
+        
+        return model
         
     def forward(
         self,
@@ -448,6 +529,7 @@ class FusionModel(PreTrainedModel, GenerationMixin):
         return_dict_in_generate: bool = False,
         logits_hook: Optional[callable] = None,  # N10 FIX: Hook for ThinkingDial logit bias
         past_key_values: Optional[Tuple] = None,  # N17 FIX: Accept pre-computed KV cache
+        thinking_depth: Optional[int] = None,  # Thinking Dial depth control
         **kwargs,
     ) -> CausalLMOutputWithPast:
         """Generate text with KV cache and SBLA incremental support.
@@ -487,6 +569,21 @@ class FusionModel(PreTrainedModel, GenerationMixin):
             generated = input_ids.clone()
         
         logits_hook = kwargs.pop('logits_hook', logits_hook)
+        
+        # Thinking Dial integration: if thinking_depth is provided and model has
+        # the Thinking Dial embedding/gate, build a logits_hook automatically.
+        # This unifies the two control mechanisms (text token vs architecture-level)
+        # so users can simply pass thinking_depth=N without wrapping in ThinkingDialModel.
+        if thinking_depth is not None and hasattr(self, 'thinking_embedding'):
+            from models.thinking_dial import ThinkingDialModel, ThinkingConfig
+            hook = ThinkingDialModel._build_thinking_logits_hook(
+                thinking_depth, batch_size, device,
+                getattr(self, 'thinking_config', ThinkingConfig()),
+                self.thinking_embedding, self.thinking_gate,
+                self.lm_head,
+            )
+            if hook is not None:
+                logits_hook = hook  # Thinking Dial hook takes precedence
         
         for _ in range(max_new_tokens):
             if past_key_values is not None:
@@ -548,8 +645,9 @@ class FusionModel(PreTrainedModel, GenerationMixin):
                 loss=None,
                 logits=None,
                 past_key_values=past_key_values,
-                sequences=generated,
-            )
+                hidden_states=None,
+                attentions=None,
+            ), generated  # Return tuple (output, sequences)
         return generated
     
     def prepare_inputs_for_generation(self, input_ids: torch.Tensor, past_key_values=None, **kwargs):
