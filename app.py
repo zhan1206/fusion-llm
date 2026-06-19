@@ -253,9 +253,9 @@ def train_fn(learning_rate, epochs, batch_size_val):
 
     plot = None
     if losses:
-        import pandas as pd
-        df = pd.DataFrame({"epoch": training_history["epoch"], "loss": losses})
-        plot = df
+        plot = "Epoch -> Loss\n" + "\n".join(f"{e} -> {l}" for e, l in zip(training_history["epoch"], losses))
+    else:
+        plot = "No data."
 
     status = f"Done! Final Loss: {losses[-1]:.4f}" if losses else "No training performed."
     return status, plot
@@ -314,7 +314,7 @@ with gr.Blocks(title="Fusion-LLM Demo", theme=gr.themes.Soft()) as demo:
                 bs = gr.Slider(1, 10, value=4, label="Batch Size", step=1)
             train_btn = gr.Button("Start Training", variant="primary")
             train_status = gr.Textbox(label="Status", interactive=False)
-            loss_plot = gr.LinePlot(label="Loss Curve", x="epoch", y="loss")
+            loss_plot = gr.Textbox(label="Loss History", interactive=False)
 
             train_btn.click(fn=train_fn, inputs=[lr, eps, bs],
                             outputs=[train_status, loss_plot])
