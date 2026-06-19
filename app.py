@@ -31,7 +31,7 @@ from datetime import datetime
 
 class SBLAttention(nn.Module):
     """Sparse Block Latent Attention with gated merging."""
-    def __init__(self, hidden_size=320, num_heads=12, latent_ratio=4, block_size=16):
+    def __init__(self, hidden_size=384, num_heads=12, latent_ratio=4, block_size=16):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_heads = num_heads
@@ -78,7 +78,7 @@ class SBLAttention(nn.Module):
 
 
 class FusionBlock(nn.Module):
-    def __init__(self, hidden_size=320, num_heads=12, ff_dim=768):
+    def __init__(self, hidden_size=384, num_heads=12, ff_dim=1024):
         super().__init__()
         self.ln1 = nn.LayerNorm(hidden_size)
         self.attn = SBLAttention(hidden_size, num_heads)
@@ -97,8 +97,8 @@ class FusionBlock(nn.Module):
 
 class FusionMini(nn.Module):
     """Fusion-LLM model for demo - v4: ~35M params for better quality."""
-    def __init__(self, vocab_size=800, hidden_size=320, num_layers=6, num_heads=12,
-                 max_seq_len=256, ff_dim=768):
+    def __init__(self, vocab_size=800, hidden_size=384, num_layers=6, num_heads=12,
+                 max_seq_len=256, ff_dim=1024):
         super().__init__()
         self.config = type('obj', (object,), {
             'vocab_size': vocab_size, 'hidden_size': hidden_size,
@@ -988,14 +988,14 @@ model = None
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 training_history = {"loss": [], "epoch": []}
 
-# v4 model config: ~35M params
+# v4 model config: ~38M params
 MODEL_CONFIG = {
     "vocab_size": tokenizer.vocab_size,
-    "hidden_size": 320,
+    "hidden_size": 384,
     "num_layers": 6,
     "num_heads": 12,
     "max_seq_len": 256,
-    "ff_dim": 768,
+    "ff_dim": 1024,
 }
 
 
@@ -1135,7 +1135,7 @@ with gr.Blocks(title="Fusion-LLM Demo v4", theme=gr.themes.Soft()) as demo:
     # Fusion-LLM Demo v4
     **Train & Chat** with a custom Transformer featuring **SBLA Attention** + **Thinking Dial**
 
-    Upgraded: ~35M params | BPE vocab=800 | seq_len=256 | answer-only training | 560+ pairs
+    Upgraded: ~38M params | BPE vocab=800 | seq_len=256 | answer-only training | 560+ pairs
     """)
 
     with gr.Tabs():
@@ -1181,12 +1181,12 @@ with gr.Blocks(title="Fusion-LLM Demo v4", theme=gr.themes.Soft()) as demo:
             - Implemented via logits hook callback (architecture-level control)
 
             ### Model Specs (Demo v4)
-            - **Parameters**: ~35M (up from 12M in v3)
+            - **Parameters**: ~38M (up from 12M in v3)
             - **Vocabulary**: BPE subword (~800 tokens, optimized density over v3's 2000)
             - **Layers**: 6 Transformer blocks (up from 4)
-            - **Hidden Size**: 320 (up from 256)
+            - **Hidden Size**: 384 (up from 256, divisible by 12 heads)
             - **Attention Heads**: 12 (up from 8)
-            - **FFN Dim**: 768 (up from 512)
+            - **FFN Dim**: 1024 (up from 512)
             - **Max Seq Len**: 256
             - **Training Strategy**: Answer-only loss (only predicts after `<|a|>`)
             - **Training Data**: 560+ QA pairs across 10 domains (up from 199)
