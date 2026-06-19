@@ -253,13 +253,9 @@ def train_fn(learning_rate, epochs, batch_size_val):
 
     plot = None
     if losses:
-        fig = {
-            "data": [{"x": training_history["epoch"], "y": losses, "type": "scatter",
-                      "mode": "lines+markers", "name": "Loss", "line": {"color": "#4285f4"}}],
-            "layout": {"title": "Training Loss", "xaxis": {"title": "Epoch"},
-                       "yaxis": {"title": "Loss"}, "height": 300}
-        }
-        plot = json.dumps(fig, ensure_ascii=False)
+        import pandas as pd
+        df = pd.DataFrame({"epoch": training_history["epoch"], "loss": losses})
+        plot = df
 
     status = f"Done! Final Loss: {losses[-1]:.4f}" if losses else "No training performed."
     return status, plot
@@ -318,7 +314,7 @@ with gr.Blocks(title="Fusion-LLM Demo", theme=gr.themes.Soft()) as demo:
                 bs = gr.Slider(1, 10, value=4, label="Batch Size", step=1)
             train_btn = gr.Button("Start Training", variant="primary")
             train_status = gr.Textbox(label="Status", interactive=False)
-            loss_plot = gr.Plot(label="Loss Curve")
+            loss_plot = gr.LinePlot(label="Loss Curve", x="epoch", y="loss")
 
             train_btn.click(fn=train_fn, inputs=[lr, eps, bs],
                             outputs=[train_status, loss_plot])
@@ -364,10 +360,4 @@ with gr.Blocks(title="Fusion-LLM Demo", theme=gr.themes.Soft()) as demo:
 
 
 if __name__ == "__main__":
-    # gradio 4.44.0 (hardcoded by HF Spaces Dockerfile) has a localhost-check bug.
-    # Set share=False explicitly to suppress the faulty check on Spaces.
-    try:
-        demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
-    except ValueError:
-        # Fallback: share=True works even when the faulty check fails
-        demo.launch(server_name="0.0.0.0", server_port=7860, share=True)
+    demo.launch()
