@@ -1,7 +1,7 @@
 """
-Fusion-LLM Demo v4 - Hugging Face Space
-Upgraded: ~35M params | BPE vocab=800 | seq_len=256 | answer-only training | 550+ pairs
-Optimized for CPU demo: denser vocab, more data, larger model.
+Fusion-LLM Demo v5 - Hugging Face Space
+Upgraded: ~38M params | BPE vocab=800 | seq_len=256 | answer-only training | 560+ pairs
+v5 fix: explicit SPACE_ID tokenizer fix (was injecting UNK between every word)
 """
 
 # Compatibility shim: huggingface_hub >=1.0 removed HfFolder, but gradio 4.44 still imports it.
@@ -96,7 +96,7 @@ class FusionBlock(nn.Module):
 
 
 class FusionMini(nn.Module):
-    """Fusion-LLM model for demo - v4: ~35M params for better quality."""
+    """Fusion-LLM model for demo - v5: ~38M params, proper tokenization."""
     def __init__(self, vocab_size=800, hidden_size=384, num_layers=6, num_heads=12,
                  max_seq_len=256, ff_dim=1024):
         super().__init__()
@@ -146,6 +146,7 @@ class BPETokenizer:
         self.bos_id = 3
         self.q_sep_id = 4   # <|q|> question separator
         self.a_sep_id = 5   # <|a|> answer separator
+        self.space_id = 6   # explicit space token (NOT looked up via vocab)
         self.word_cache = {}
 
     @staticmethod
@@ -186,13 +187,14 @@ class BPETokenizer:
             for ch in word_tuple:
                 base_tokens.add(ch)
 
-        self.vocab = {t: i + 6 for i, t in enumerate(sorted(base_tokens))}
+        self.vocab = {t: i + 7 for i, t in enumerate(sorted(base_tokens))}  # 7=offset after 7 special tokens
         self.vocab['<pad>'] = self.pad_id
         self.vocab['<unk>'] = self.unk_id
         self.vocab['<eos>'] = self.eos_id
         self.vocab['<bos>'] = self.bos_id
         self.vocab['<|q|>'] = self.q_sep_id
         self.vocab['<|a|>'] = self.a_sep_id
+        self.vocab['<space>'] = self.space_id
 
         current_size = len(self.vocab)
         num_merges = target_vocab_size - current_size
@@ -261,12 +263,12 @@ class BPETokenizer:
         for w in question.split():
             for tok in self._tokenize_word(w):
                 ids.append(self.token_to_id.get(tok, self.unk_id))
-            ids.append(self.token_to_id.get(' ', self.unk_id))
+            ids.append(self.space_id)
         ids.append(self.a_sep_id)
         for w in answer.split():
             for tok in self._tokenize_word(w):
                 ids.append(self.token_to_id.get(tok, self.unk_id))
-            ids.append(self.token_to_id.get(' ', self.unk_id))
+            ids.append(self.space_id)
         ids.append(self.eos_id)
         return ids[:max_len]
 
@@ -276,7 +278,7 @@ class BPETokenizer:
         for w in prompt.split():
             for tok in self._tokenize_word(w):
                 ids.append(self.token_to_id.get(tok, self.unk_id))
-            ids.append(self.token_to_id.get(' ', self.unk_id))
+            ids.append(self.space_id)
         # Add <|a|> to signal: now generate the answer
         ids.append(self.a_sep_id)
         return ids[:max_len]
@@ -287,7 +289,7 @@ class BPETokenizer:
         for w in words:
             for tok in self._tokenize_word(w):
                 ids.append(self.token_to_id.get(tok, self.unk_id))
-            ids.append(self.token_to_id.get(' ', self.unk_id))
+            ids.append(self.space_id)
         ids.append(self.eos_id)
         return ids[:max_len]
 
@@ -296,10 +298,13 @@ class BPETokenizer:
         for i in ids:
             if i in (self.pad_id, self.eos_id):
                 break
-            if i == self.bos_id or i == self.q_sep_id or i == self.a_sep_id:
+            if i in (self.bos_id, self.q_sep_id, self.a_sep_id):
                 continue
-            tokens.append(self.id_to_token.get(i, '<unk>'))
-        return ''.join(tokens).replace('<unk>', '?')
+            if i == self.space_id:
+                tokens.append(' ')
+            else:
+                tokens.append(self.id_to_token.get(i, '?'))
+        return ''.join(tokens)
 
 
 # ── Expanded Training Data (550+ QA pairs) ────────────────────────
@@ -1081,7 +1086,23 @@ def train_fn(learning_rate, epochs, batch_size_val):
         if losses:
             plot_text = "Epoch -> Loss\n" + "\n".join(f"{e} -> {l}" for e, l in zip(training_history["epoch"], losses))
             param_count = count_parameters()
-            status = f"Done! Final Loss: {losses[-1]:.4f} | Params: {param_count/1e6:.1f}M | Vocab: {tokenizer.vocab_size} | Data: {len(TRAIN_DATA)} pairs"
+            # Diagnostic: token stats
+            total_tok = sum(len(ep) for ep in encoded_pairs)
+            space_tok = sum(int((ep == tokenizer.space_id).sum()) for ep in encoded_pairs)
+            a_sep_positions = []
+            for ep in encoded_pairs:
+                hits = (ep == tokenizer.a_sep_id).nonzero()
+                if len(hits) > 0:
+                    a_sep_positions.append((len(ep), hits[0].item()))
+            avg_answer_tok = sum(l - p - 2 for l, p in a_sep_positions) / max(len(a_sep_positions), 1)
+            diag = f"\nTokens: {total_tok} total | {space_tok} space | ~{avg_answer_tok:.0f} avg answer tok | {tokenizer.vocab_size} vocab"
+            # Show first 3 decoded samples to verify fix
+            sample_decodes = []
+            for j in range(min(3, len(encoded_pairs))):
+                decoded = tokenizer.decode(encoded_pairs[j].tolist())
+                sample_decodes.append(f"  Sample {j+1}: {decoded[:80]}...")
+            diag += "\nVerify samples:\n" + "\n".join(sample_decodes)
+            status = f"Done! Final Loss: {losses[-1]:.4f} | Params: {param_count/1e6:.1f}M | Data: {len(TRAIN_DATA)} pairs" + diag
         else:
             plot_text = "No data."
             status = "No training performed."
@@ -1130,12 +1151,12 @@ def chat_fn(prompt, max_tokens, temperature, top_p):
 
 # ── Gradio UI ─────────────────────────────────────────────────────
 
-with gr.Blocks(title="Fusion-LLM Demo v4", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="Fusion-LLM Demo v5", theme=gr.themes.Soft()) as demo:
     gr.Markdown("""
-    # Fusion-LLM Demo v4
+    # Fusion-LLM Demo v5
     **Train & Chat** with a custom Transformer featuring **SBLA Attention** + **Thinking Dial**
 
-    Upgraded: ~38M params | BPE vocab=800 | seq_len=256 | answer-only training | 560+ pairs
+    v5 fix: proper space tokenization | ~38M params | BPE vocab=800 | 560+ pairs | answer-only training
     """)
 
     with gr.Tabs():
@@ -1180,9 +1201,10 @@ with gr.Blocks(title="Fusion-LLM Demo v4", theme=gr.themes.Soft()) as demo:
             - Controls how much computation the model spends thinking before answering
             - Implemented via logits hook callback (architecture-level control)
 
-            ### Model Specs (Demo v4)
+            ### Model Specs (Demo v5)
             - **Parameters**: ~38M (up from 12M in v3)
             - **Vocabulary**: BPE subword (~800 tokens, optimized density over v3's 2000)
+            - **Tokenization**: Proper BPE subword + explicit SPACE_ID (v5 fix — was injecting UNK)
             - **Layers**: 6 Transformer blocks (up from 4)
             - **Hidden Size**: 384 (up from 256, divisible by 12 heads)
             - **Attention Heads**: 12 (up from 8)
